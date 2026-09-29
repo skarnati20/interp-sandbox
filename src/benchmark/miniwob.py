@@ -2,7 +2,6 @@ import re
 from typing import Any, Optional
 import gymnasium
 
-
 import miniwob
 from miniwob.action import ActionTypes
 
@@ -49,31 +48,50 @@ class MiniWoBActionParser:
     """Parses LLM textual action strings into MiniWoB Action objects."""
 
     @staticmethod
-    def parse_action(action_str: str, env: Any) -> dict[str, Any]:
+    def resolve_ref(raw_ref: Any, dom_elements: tuple[dict[str, Any], ...] = ()) -> Optional[int]:
+        if isinstance(raw_ref, int) or str(raw_ref).isdigit():
+            return int(raw_ref)
+        ref_str = str(raw_ref).strip("'\"")
+        for elem in dom_elements:
+            if ref_str in (elem.get("id"), elem.get("classes"), elem.get("text", "").strip()):
+                return elem.get("ref")
+        return None
+
+    @classmethod
+    def parse_action(
+        cls,
+        action_str: str,
+        env: Any,
+        dom_elements: tuple[dict[str, Any], ...] = (),
+    ) -> dict[str, Any]:
         action_str = action_str.strip()
 
-        # 1. Match CLICK(ref=1) or CLICK(1)
-        click_match = re.search(r"CLICK\(.*?ref\s*=\s*(\d+).*?\)|CLICK\((\d+)\)", action_str, re.IGNORECASE)
+        # 1. Match CLICK(ref=1), CLICK(ref='subbtn'), or CLICK(1)
+        click_match = re.search(r"CLICK\(.*?ref\s*=\s*['\"]?([a-zA-Z0-9_\-]+)['\"]?.*?\)|\bCLICK\((\d+)\)", action_str, re.IGNORECASE)
         if click_match:
-            ref_id = int(click_match.group(1) or click_match.group(2))
-            try:
-                return env.unwrapped.create_action(ActionTypes.CLICK_ELEMENT, ref=ref_id)
-            except Exception:
-                pass
+            raw_ref = click_match.group(1) or click_match.group(2)
+            ref_id = cls.resolve_ref(raw_ref, dom_elements)
+            if ref_id is not None:
+                try:
+                    return env.unwrapped.create_action(ActionTypes.CLICK_ELEMENT, ref=ref_id)
+                except Exception:
+                    pass
 
-        # 2. Match TYPE(ref=1, text="hello") or TYPE(1, "hello")
+        # 2. Match TYPE(ref=..., text="...") or TYPE(..., "...")
         type_match = re.search(
-            r'TYPE\(.*?ref\s*=\s*(\d+).*?text\s*=\s*["\'](.*?)["\'].*?\)|TYPE\((\d+),\s*["\'](.*?)["\']\)',
+            r'TYPE\(.*?ref\s*=\s*[\'"]?([a-zA-Z0-9_\-]+)[\'"]?.*?text\s*=\s*["\'](.*?)["\'].*?\)|TYPE\((\d+),\s*["\'](.*?)["\']\)',
             action_str,
             re.IGNORECASE,
         )
         if type_match:
-            ref_id = int(type_match.group(1) or type_match.group(3))
+            raw_ref = type_match.group(1) or type_match.group(3)
             text_val = type_match.group(2) or type_match.group(4)
-            try:
-                return env.unwrapped.create_action(ActionTypes.TYPE_TEXT, ref=ref_id, text=text_val)
-            except Exception:
-                pass
+            ref_id = cls.resolve_ref(raw_ref, dom_elements)
+            if ref_id is not None:
+                try:
+                    return env.unwrapped.create_action(ActionTypes.TYPE_TEXT, ref=ref_id, text=text_val)
+                except Exception:
+                    pass
 
         # 3. Match PRESS_ENTER()
         if "PRESS_ENTER" in action_str.upper():
@@ -119,6 +137,7 @@ class MiniWoBBenchmark(BaseBenchmark):
         self.render_mode = render_mode
         self.current_env = None
         self.current_task_id = None
+        self.dom_elements: tuple[dict[str, Any], ...] = ()
         self.cumulative_reward = 0.0
         self.formatter = MiniWoBDomFormatter()
         self.parser = MiniWoBActionParser()
@@ -147,9 +166,10 @@ class MiniWoBBenchmark(BaseBenchmark):
         )
         obs, info = self.current_env.reset(seed=seed)
         self.cumulative_reward = 0.0
+        self.dom_elements = obs.get("dom_elements", ())
 
         utterance = obs.get("utterance", "")
-        dom_text = self.formatter.format_dom(obs.get("dom_elements", ()))
+        dom_text = self.formatter.format_dom(self.dom_elements)
 
         obs_text = f"Goal: {utterance}\n\nVisible Elements:\n{dom_text}"
         return StepObservation(
@@ -163,13 +183,14 @@ class MiniWoBBenchmark(BaseBenchmark):
         if self.current_env is None:
             raise RuntimeError("Environment not initialized. Call reset() first.")
 
-        action = self.parser.parse_action(action_str, self.current_env)
+        action = self.parser.parse_action(action_str, self.current_env, dom_elements=self.dom_elements)
         obs, reward, terminated, truncated, info = self.current_env.step(action)
 
         self.cumulative_reward += float(reward)
         is_done = bool(terminated or truncated)
 
-        dom_text = self.formatter.format_dom(obs.get("dom_elements", ()))
+        self.dom_elements = obs.get("dom_elements", ())
+        dom_text = self.formatter.format_dom(self.dom_elements)
         utterance = obs.get("utterance", "")
         obs_text = f"Goal: {utterance}\n\nUpdated Elements:\n{dom_text}"
 
