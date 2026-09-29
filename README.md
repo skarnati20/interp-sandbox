@@ -2,20 +2,25 @@
 
 A research sandbox for **Agentic Mechanistic Interpretability & Representation Engineering**.
 
-## Repo Structure
+## Repository Structure
 
 ```text
 interp-sandbox/
-├── src/
-│   ├── activations.py         # Forward pass & full-sequence hidden state extraction
-│   ├── store.py               # Memory-mapped Safetensors & Parquet serialization
-│   ├── runner.py              # Multi-turn agent interaction loop
+├── docker/                            # BENCHMARK-SPECIFIC DOCKERFILES
+│   └── Dockerfile.miniwob             # Isolated image for MiniWoB++ (CUDA + Chromium + Xvfb)
+├── src/                               # REUSABLE CORE LIBRARY
+│   ├── activations.py                 # Forward pass & full-sequence hidden state extraction
+│   ├── store.py                       # Memory-mapped Safetensors & Parquet serialization
+│   ├── runner.py                      # Multi-turn agent interaction loop
 │   └── benchmark/
 │       ├── __init__.py
-│       ├── base.py            # Universal BaseBenchmark interface
-│       └── ...                # Other benchmarks which implement BaseBenchmark
-├── test_local.py              # Fast local pipeline verification script
-├── requirements.txt           # Python dependencies
+│       ├── base.py                    # Universal BaseBenchmark interface
+│       └── miniwob.py                 # MiniWoB++ adapter (DOM formatter & action parser)
+├── scripts/                           # BENCHMARK-SPECIFIC EXECUTABLES
+│   ├── setup_miniwob.sh               # RunPod setup script for MiniWoB++
+│   └── collect_miniwob.py             # MiniWoB++ data collection runner
+├── test_local.py                      # Fast local pipeline verification script
+├── requirements.txt                   # Python dependencies
 └── README.md
 ```
 

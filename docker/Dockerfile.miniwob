@@ -1,0 +1,25 @@
+FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+
+# 1. Install system dependencies for headless Chromium & virtual framebuffer
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    chromium-browser \
+    chromium-chromedriver \
+    xvfb \
+    git \
+    git-lfs \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+# 2. Install Python dependencies (Core Sandbox + MiniWoB Benchmark)
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir gymnasium>=0.29.0 miniwob>=1.0.0 selenium>=4.15.0
+
+# 3. Copy codebase
+COPY . .
+
+# Default command runs MiniWoB collection under virtual display (Xvfb)
+ENTRYPOINT ["xvfb-run", "-a", "python", "scripts/collect_miniwob.py"]
+CMD ["--model", "Qwen/Qwen2.5-Coder-7B-Instruct", "--num_episodes", "20", "--output_dir", "/workspace/data/runs/miniwob_qwen7b"]
