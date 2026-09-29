@@ -21,6 +21,11 @@ def parse_args():
         help="Hugging Face model ID (e.g. Qwen/Qwen2.5-Coder-7B-Instruct, meta-llama/Llama-3.1-8B-Instruct)",
     )
     parser.add_argument(
+        "--all_envs",
+        action="store_true",
+        help="Run across ALL 120+ registered MiniWoB++ environments",
+    )
+    parser.add_argument(
         "--envs",
         type=str,
         nargs="+",
@@ -31,13 +36,19 @@ def parse_args():
             "miniwob/choose-date-v1",
             "miniwob/click-dialog-v1",
         ],
-        help="MiniWoB environment names to evaluate",
+        help="MiniWoB environment names (or 'all')",
+    )
+    parser.add_argument(
+        "--episodes_per_env",
+        type=int,
+        default=1,
+        help="Number of episodes to run per environment",
     )
     parser.add_argument(
         "--num_episodes",
         type=int,
-        default=20,
-        help="Number of episodes / tasks to run",
+        default=None,
+        help="Total episode limit across all environments (optional)",
     )
     parser.add_argument(
         "--max_steps",
@@ -63,14 +74,22 @@ def parse_args():
 def main():
     args = parse_args()
 
+    # Determine environment list
+    if args.all_envs or args.envs == ["all"] or args.envs == "all":
+        env_selection = "all"
+        display_envs = f"ALL 128 MiniWoB++ environments (episodes_per_env={args.episodes_per_env})"
+    else:
+        env_selection = args.envs
+        display_envs = str(args.envs)
+
     print("=" * 60)
     print("MiniWoB++ Activation Collection")
     print("=" * 60)
-    print(f"Model:       {args.model}")
-    print(f"Envs:        {args.envs}")
-    print(f"Episodes:    {args.num_episodes}")
-    print(f"Max Steps:   {args.max_steps}")
-    print(f"Output Dir:  {args.output_dir}")
+    print(f"Model:            {args.model}")
+    print(f"Environments:     {display_envs}")
+    print(f"Episodes/Env:     {args.episodes_per_env}")
+    print(f"Max Steps/Ep:     {args.max_steps}")
+    print(f"Output Directory: {args.output_dir}")
     print("=" * 60)
 
     # 1. Initialize Activation Extractor (Loads Model to GPU)
@@ -79,7 +98,12 @@ def main():
 
     # 2. Initialize MiniWoB Benchmark
     print("\n[2/3] Initializing MiniWoB environments...")
-    benchmark = MiniWoBBenchmark(env_names=args.envs)
+    benchmark = MiniWoBBenchmark(
+        env_names=env_selection,
+        episodes_per_env=args.episodes_per_env,
+    )
+    total_tasks = len(benchmark.list_tasks())
+    print(f"  -> Generated {total_tasks} total benchmark tasks.")
 
     # 3. Execute Runner
     print("\n[3/3] Starting episode rollouts and activation harvesting...")

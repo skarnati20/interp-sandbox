@@ -1,5 +1,5 @@
 import re
-from typing import Any, Optional
+from typing import Any, Optional, Union
 import gymnasium
 
 import miniwob
@@ -126,15 +126,29 @@ class MiniWoBBenchmark(BaseBenchmark):
         "Respond ONLY with the exact command."
     )
 
+    @classmethod
+    def get_all_registered_envs(cls) -> list[str]:
+        """Returns all 120+ MiniWoB++ environment IDs registered in Gymnasium."""
+        return sorted([
+            env_id for env_id in gymnasium.envs.registry.keys()
+            if env_id.startswith("miniwob/")
+        ])
+
     def __init__(
         self,
-        env_names: Optional[list[str]] = None,
+        env_names: Optional[Union[list[str], str]] = None,
         wait_ms: int = 150,
         render_mode: Optional[str] = None,
+        episodes_per_env: int = 1,
     ):
-        self.env_names = env_names or self.DEFAULT_ENV_NAMES
+        if env_names == "all" or env_names == ["all"]:
+            self.env_names = self.get_all_registered_envs()
+        else:
+            self.env_names = env_names or self.DEFAULT_ENV_NAMES
+
         self.wait_ms = wait_ms
         self.render_mode = render_mode
+        self.episodes_per_env = max(1, episodes_per_env)
         self.current_env = None
         self.current_task_id = None
         self.dom_elements: tuple[dict[str, Any], ...] = ()
@@ -145,22 +159,25 @@ class MiniWoBBenchmark(BaseBenchmark):
     def list_tasks(self, split: str = "train") -> list[TaskInstance]:
         tasks = []
         for name in self.env_names:
-            tasks.append(
-                TaskInstance(
-                    task_id=name,
-                    instruction="Accomplish the goal indicated in the web page utterance.",
-                    system_prompt=self.DEFAULT_SYSTEM_PROMPT,
-                    info={"env_name": name},
+            for ep_idx in range(self.episodes_per_env):
+                task_id = name if self.episodes_per_env == 1 else f"{name}_ep{ep_idx}"
+                tasks.append(
+                    TaskInstance(
+                        task_id=task_id,
+                        instruction="Accomplish the goal indicated in the web page utterance.",
+                        system_prompt=self.DEFAULT_SYSTEM_PROMPT,
+                        info={"env_name": name, "episode_idx": ep_idx},
+                    )
                 )
-            )
         return tasks
 
     def reset(self, task: TaskInstance, seed: Optional[int] = None) -> StepObservation:
         self.close()
 
+        env_name = task.info.get("env_name", task.task_id)
         self.current_task_id = task.task_id
         self.current_env = gymnasium.make(
-            task.task_id,
+            env_name,
             render_mode=self.render_mode,
             wait_ms=self.wait_ms,
         )
