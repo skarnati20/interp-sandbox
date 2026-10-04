@@ -6,27 +6,25 @@ A research sandbox for **Agentic Mechanistic Interpretability & Representation E
 
 ```text
 interp-sandbox/
-├── docker/                            # BENCHMARK-SPECIFIC DOCKERFILES
-│   └── Dockerfile.miniwob             # Isolated image for MiniWoB++ (CUDA + Chromium + Xvfb)
 ├── src/                               # REUSABLE CORE LIBRARY
-│   ├── activations.py                 # Forward pass & full-sequence hidden state extraction
-│   ├── store.py                       # Memory-mapped Safetensors & Parquet serialization
+│   ├── activations.py                 # Forward pass & residual-stream activation extraction
+│   ├── store.py                       # Safetensors & Parquet trajectory serialization
 │   ├── runner.py                      # Multi-turn agent interaction loop
 │   └── benchmark/
 │       ├── __init__.py
 │       ├── base.py                    # Universal BaseBenchmark interface
 │       └── miniwob.py                 # MiniWoB++ adapter (DOM formatter & action parser)
 ├── scripts/                           # BENCHMARK-SPECIFIC EXECUTABLES
-│   ├── setup_miniwob.sh               # RunPod setup script for MiniWoB++
+│   ├── setup_miniwob.sh               # RunPod / Linux setup script for MiniWoB++
 │   └── collect_miniwob.py             # MiniWoB++ data collection runner
 ├── test_local.py                      # Fast local pipeline verification script
-├── requirements.txt                   # Python dependencies
+├── requirements.txt                   # Minimal Python dependencies
 └── README.md
 ```
 
 ## Quick Start
 
-You can verify the pipeline with the MiniWob++ benchmark as so:
+You can verify the pipeline with the MiniWoB++ benchmark as so:
 
 ```bash
 # 1. Install dependencies
