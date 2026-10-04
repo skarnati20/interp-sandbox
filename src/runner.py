@@ -13,11 +13,13 @@ class Runner:
         extractor: ActivationExtractor,
         benchmark: BaseBenchmark,
         output_dir: str | Path = "data/runs",
+        save_mode: str = "decision",
     ):
         self.extractor = extractor
         self.benchmark = benchmark
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.save_mode = save_mode
 
     def get_tasks(self, split: str = "train", limit: Optional[int] = None) -> list[TaskInstance]:
         tasks = self.benchmark.list_tasks(split=split)
@@ -61,6 +63,7 @@ class Runner:
                 save_activation_result(
                     dir_path=step_dir,
                     result=result,
+                    mode=self.save_mode,
                     extra_metadata={
                         "episode_id": episode_id,
                         "task_id": task.task_id,
@@ -118,12 +121,9 @@ class Runner:
             print(f"  Result: {status} (Steps: {result['num_steps']}, Reward: {result['total_reward']})")
 
         # Save run summary using store abstraction
-        if results:
-            summary_path = self.output_dir / "run_summary.parquet"
-            save_run_summary(summary_path, results)
-            success_count = sum(1 for r in results if r["is_success"])
-            success_rate = success_count / len(results)
-            print(f"\nBenchmark Complete! Success Rate: {success_rate * 100:.1f}%")
-            print(f"Saved run summary to {summary_path}")
+        summary_path = self.output_dir / "run_summary.parquet"
+        save_run_summary(summary_path, results)
+        print(f"\nBenchmark Complete! Success Rate: {(sum(1 for r in results if r['is_success']) / len(results)) * 100:.1f}%")
+        print(f"Saved run summary to {summary_path}")
 
         return results
