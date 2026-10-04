@@ -4,3 +4,4 @@ accelerate>=0.28.0
 safetensors>=0.4.0
 pyarrow>=14.0.0
 pandas>=2.0.0
+huggingface_hub>=0.20.0
