@@ -1,6 +1,5 @@
 from pathlib import Path
 from typing import Any, Optional
-import numpy as np
 import pandas as pd
 from safetensors.torch import load_file, save_file
 import torch
@@ -115,47 +114,3 @@ def load_run_summary(file_path: str | Path) -> pd.DataFrame:
     if not path.exists():
         raise FileNotFoundError(f"Summary file not found: {path}")
     return pd.read_parquet(path)
-
-
-def load_probing_dataset(
-    run_dir: str | Path,
-    step_idx: int = 0,
-) -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
-    """
-    Loads all decision-token activations and labels for a specific step across all episodes.
-
-    Returns:
-      - X: np.ndarray of shape [num_episodes, num_layers, hidden_dim]
-      - y: np.ndarray of shape [num_episodes] (1 = success, 0 = failure)
-      - summary_df: pd.DataFrame of matched episode records
-    """
-    run_path = Path(run_dir)
-    summary_df = load_run_summary(run_path / "run_summary.parquet")
-
-    X_list = []
-    y_list = []
-    valid_rows = []
-
-    for _, row in summary_df.iterrows():
-        ep_id = row["episode_id"]
-        step_dir = run_path / ep_id / f"step_{step_idx}"
-
-        try:
-            result, meta = load_activation_result(step_dir)
-            # Use last_prompt_state property from ExtractionResult [num_layers, hidden_dim]
-            decision_tensor = result.last_prompt_state.numpy().astype(np.float32)
-            X_list.append(decision_tensor)
-            y_list.append(1 if row["is_success"] else 0)
-            valid_rows.append(row)
-        except FileNotFoundError:
-            # Episode ended before this step_idx
-            continue
-
-    if not X_list:
-        raise ValueError(f"No step_{step_idx} data found in {run_path}")
-
-    X = np.stack(X_list, axis=0)  # [N, num_layers, hidden_dim]
-    y = np.array(y_list, dtype=np.int64)  # [N]
-    matched_df = pd.DataFrame(valid_rows).reset_index(drop=True)
-
-    return X, y, matched_df
