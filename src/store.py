@@ -1,104 +1,97 @@
+from __future__ import annotations
+
+import json
 from pathlib import Path
 from typing import Any, Optional
+
+import numpy as np
 import pandas as pd
-from safetensors.torch import load_file, save_file
 import torch
 
-from src.activations import ExtractionResult
 
-
-def save_activation_result(
-    dir_path: str | Path,
-    result: ExtractionResult,
-    extra_metadata: Optional[dict[str, Any]] = None,
-    mode: str = "decision",
-) -> tuple[Path, Path]:
+class ShardWriter:
     """
-    Persists activations and step metadata to disk.
-
-    Args:
-        dir_path: Directory where artifacts are stored.
-        result: ExtractionResult containing tensors and completion metadata.
-        extra_metadata: Additional dict metadata to include in metadata.parquet.
-        mode: "decision" (default, saves only [num_layers, hidden_dim] ~200KB/step)
-              or "all" (saves full 3D tensor [num_layers, seq_len, hidden_dim] ~200MB/step).
+    High-performance sharded storage writer.
+    Consolidates activation tensors and step metadata into matching
+    'feat.shard*.npz' and 'meta.shard*.jsonl' files directly compatible
+    with 'Doomed from the Start' (2026).
     """
-    save_dir = Path(dir_path)
-    save_dir.mkdir(parents=True, exist_ok=True)
 
-    activations_path = save_dir / "activations.safetensors"
+    def __init__(
+        self,
+        output_dir: str | Path,
+        shard_size: int = 2000,
+        layer_ids: Optional[list[int]] = None,
+    ):
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.shard_size = shard_size
+        self.layer_ids = layer_ids
+        self.shard_idx = 0
 
-    if mode == "decision":
-        # Save only the decision token across all layers [num_layers, hidden_dim]
-        tensor_dict = {"decision_state": result.last_prompt_state.contiguous()}
-    elif mode == "all":
-        # Save the full 3D tensor [num_layers, seq_len, hidden_dim]
-        tensor_dict = {"hidden_states": result.hidden_states.contiguous()}
-    else:
-        raise ValueError(f"Unknown save mode: {mode}. Choose 'decision' or 'all'.")
+        self._current_feats: list[np.ndarray] = []
+        self._current_metas: list[dict[str, Any]] = []
 
-    save_file(tensor_dict, activations_path)
+    def add_step(
+        self,
+        feat_tensor: torch.Tensor | np.ndarray,
+        meta: dict[str, Any],
+    ) -> None:
+        """
+        Adds a single anchor activation vector and its metadata to the active shard buffer.
+        Args:
+            feat_tensor: Array/Tensor of shape [n_layers, hidden_dim] or [hidden_dim] (float16).
+            meta: Metadata dict with {task_idx, rollout_k, round, anchor, success, ...}.
+        """
+        if isinstance(feat_tensor, torch.Tensor):
+            feat_arr = feat_tensor.to(torch.float16).detach().cpu().numpy()
+        else:
+            feat_arr = np.asarray(feat_tensor, dtype=np.float16)
 
-    # Prepare and save metadata
-    meta = {
-        "completion_text": result.completion_text,
-        "prompt_tokens": result.prompt_tokens,
-        "completion_tokens": result.completion_tokens,
-        "save_mode": mode,
-        "num_layers": result.hidden_states.shape[0],
-        "seq_len": result.hidden_states.shape[1],
-        "hidden_dim": result.hidden_states.shape[2],
-    }
-    if extra_metadata:
-        meta.update(extra_metadata)
+        if feat_arr.ndim == 1:
+            feat_arr = np.expand_dims(feat_arr, axis=0)  # Shape: [1, hidden_dim]
 
-    metadata_path = save_dir / "metadata.parquet"
-    df = pd.DataFrame([meta])
-    df.to_parquet(metadata_path, index=False)
+        self._current_feats.append(feat_arr)
+        self._current_metas.append(meta)
 
-    return activations_path, metadata_path
+        if len(self._current_feats) >= self.shard_size:
+            self.flush()
 
+    def flush(self) -> Optional[tuple[Path, Path]]:
+        if not self._current_feats:
+            return None
 
-def load_activation_result(dir_path: str | Path) -> tuple[ExtractionResult, dict[str, Any]]:
-    """
-    Loads saved activations and step metadata from disk.
-    Supports both 'decision' and 'all' save modes transparently.
-    """
-    load_dir = Path(dir_path)
-    activations_path = load_dir / "activations.safetensors"
-    metadata_path = load_dir / "metadata.parquet"
+        feat_path = self.output_dir / f"feat.shard{self.shard_idx}.npz"
+        meta_path = self.output_dir / f"meta.shard{self.shard_idx}.jsonl"
 
-    if not activations_path.exists() or not metadata_path.exists():
-        raise FileNotFoundError(f"Missing activation or metadata file in {load_dir}")
+        # Stack into [N, n_layers, hidden_dim]
+        X = np.stack(self._current_feats, axis=0)
+        layer_ids_arr = (
+            np.array(self.layer_ids)
+            if self.layer_ids is not None
+            else np.arange(X.shape[1])
+        )
 
-    tensors = load_file(activations_path)
-    df = pd.read_parquet(metadata_path)
-    meta_dict = df.to_dict(orient="records")[0]
+        # 1. Save compressed numpy tensor shard
+        np.savez_compressed(feat_path, X=X, layer_ids=layer_ids_arr)
 
-    if "decision_state" in tensors:
-        # Reshape [num_layers, hidden_dim] -> [num_layers, 1, hidden_dim]
-        hidden_states = tensors["decision_state"].unsqueeze(1)
-        prompt_tokens = 1
-        completion_tokens = 0
-    else:
-        hidden_states = tensors["hidden_states"]
-        prompt_tokens = int(meta_dict.get("prompt_tokens", 1))
-        completion_tokens = int(meta_dict.get("completion_tokens", 0))
+        # 2. Save matching jsonl metadata shard
+        with open(meta_path, "w", encoding="utf-8") as fp:
+            for record in self._current_metas:
+                fp.write(json.dumps(record) + "\n")
 
-    result = ExtractionResult(
-        completion_text=str(meta_dict["completion_text"]),
-        hidden_states=hidden_states,
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-    )
+        self.shard_idx += 1
+        self._current_feats.clear()
+        self._current_metas.clear()
 
-    return result, meta_dict
+        return feat_path, meta_path
+
+    def close(self) -> None:
+        self.flush()
 
 
 def save_run_summary(file_path: str | Path, records: list[dict[str, Any]]) -> Path:
-    """
-    Saves a list of episode result dicts to a single Parquet file.
-    """
+    """Saves a list of episode result dicts to a single Parquet file."""
     path = Path(file_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     df = pd.DataFrame(records)
@@ -107,9 +100,7 @@ def save_run_summary(file_path: str | Path, records: list[dict[str, Any]]) -> Pa
 
 
 def load_run_summary(file_path: str | Path) -> pd.DataFrame:
-    """
-    Loads a run summary Parquet file into a pandas DataFrame.
-    """
+    """Loads an episode run summary Parquet file."""
     path = Path(file_path)
     if not path.exists():
         raise FileNotFoundError(f"Summary file not found: {path}")

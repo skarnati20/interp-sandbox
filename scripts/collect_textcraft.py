@@ -1,8 +1,8 @@
 """
 TextCraft Benchmark Data Collection Script.
 Runs open-weight LLMs on Minecraft sequential recipe crafting tasks,
-extracts residual-stream activations at decision tokens, and persists
-trajectories to Parquet and Safetensors.
+extracts dual-anchor residual-stream activations, and persists
+sharded features ('feat.shard*.npz' and 'meta.shard*.jsonl') for probing.
 """
 
 import argparse
@@ -18,7 +18,7 @@ from src.runner import Runner
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="TextCraft Agent Data Collection")
+    parser = argparse.ArgumentParser(description="TextCraft Agent Data Collection & Sharded Feature Extraction")
     parser.add_argument(
         "--model",
         type=str,
@@ -50,17 +50,25 @@ def parse_args():
         help="Maximum crafting steps per episode before terminating",
     )
     parser.add_argument(
-        "--save_mode",
+        "--layers",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Specific layer indices to extract (default: None = all layers; e.g. --layers 20)",
+    )
+    parser.add_argument(
+        "--anchors",
         type=str,
-        choices=["decision", "all"],
-        default="decision",
-        help="Activation storage mode: 'decision' (default, ~200KB/step) or 'all' (~200MB/step)",
+        nargs="+",
+        default=["post_gen", "pre_gen"],
+        choices=["post_gen", "pre_gen"],
+        help="Anchors to extract (default: post_gen pre_gen)",
     )
     parser.add_argument(
         "--output_dir",
         type=str,
         default="data/runs/textcraft_qwen7b",
-        help="Directory to persist safetensors and parquet summaries",
+        help="Directory to persist feature shards and parquet summaries",
     )
     parser.add_argument(
         "--temperature",
@@ -76,14 +84,15 @@ def main():
     output_path = Path(args.output_dir)
 
     print("=" * 60)
-    print("TextCraft Activation Collection")
+    print("TextCraft Activation Collection (Sharded Storage)")
     print("=" * 60)
     print(f"Model:            {args.model}")
-    print(f"Save Mode:        {args.save_mode} ({'~200 KB/step' if args.save_mode == 'decision' else '~200 MB/step'})")
     print(f"Num Tasks:        {args.num_tasks}")
     print(f"Rollouts / Task:  {args.n_rollouts}")
     print(f"Min Recipe Depth: {args.min_depth}")
     print(f"Max Steps/Ep:     {args.max_steps}")
+    print(f"Target Layers:    {args.layers or 'All Layers'}")
+    print(f"Anchors:          {args.anchors}")
     print(f"Output Directory: {output_path.resolve()}")
     print("=" * 60)
 
@@ -106,7 +115,8 @@ def main():
         extractor=extractor,
         benchmark=benchmark,
         output_dir=output_path,
-        save_mode=args.save_mode,
+        layer_ids=args.layers,
+        anchors=args.anchors,
     )
 
     results = runner.run_benchmark(
