@@ -1,6 +1,16 @@
 from .base import BaseBenchmark, StepObservation, TaskInstance
-from .miniwob import MiniWoBBenchmark, MiniWoBDomFormatter, MiniWoBActionParser
-from .textcraft import TextCraftBenchmark, TextCraftActionParser
+from .miniwob import MiniWoBActionParser, MiniWoBBenchmark, MiniWoBDomFormatter
+from .textcraft import (
+    CraftingTree,
+    ItemTag,
+    ItemTagWithCount,
+    ParsedAction,
+    Recipe,
+    TextCraftActionParser,
+    TextCraftBenchmark,
+    item_id_to_str,
+    str_to_item_id,
+)
 
 __all__ = [
     "BaseBenchmark",
@@ -11,4 +21,11 @@ __all__ = [
     "MiniWoBActionParser",
     "TextCraftBenchmark",
     "TextCraftActionParser",
+    "ParsedAction",
+    "CraftingTree",
+    "Recipe",
+    "ItemTag",
+    "ItemTagWithCount",
+    "item_id_to_str",
+    "str_to_item_id",
 ]

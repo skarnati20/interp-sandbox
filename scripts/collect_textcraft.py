@@ -28,13 +28,19 @@ def parse_args():
     parser.add_argument(
         "--num_tasks",
         type=int,
-        default=None,
-        help="Number of TextCraft tasks to run (default: all ~50 tasks)",
+        default=50,
+        help="Number of TextCraft tasks to generate and run (default: 50)",
+    )
+    parser.add_argument(
+        "--min_depth",
+        type=int,
+        default=2,
+        help="Minimum recipe depth for goal selection (default: 2)",
     )
     parser.add_argument(
         "--max_steps",
         type=int,
-        default=8,
+        default=12,
         help="Maximum crafting steps per episode before terminating",
     )
     parser.add_argument(
@@ -68,6 +74,8 @@ def main():
     print("=" * 60)
     print(f"Model:            {args.model}")
     print(f"Save Mode:        {args.save_mode} ({'~200 KB/step' if args.save_mode == 'decision' else '~200 MB/step'})")
+    print(f"Num Tasks:        {args.num_tasks}")
+    print(f"Min Recipe Depth: {args.min_depth}")
     print(f"Max Steps/Ep:     {args.max_steps}")
     print(f"Output Directory: {output_path.resolve()}")
     print("=" * 60)
@@ -78,7 +86,10 @@ def main():
 
     # 2. Initialize TextCraft Benchmark
     print("\n[2/3] Initializing TextCraft crafting environment...")
-    benchmark = TextCraftBenchmark()
+    benchmark = TextCraftBenchmark(
+        num_tasks=args.num_tasks,
+        min_depth=args.min_depth,
+    )
     total_tasks = len(benchmark.list_tasks())
     print(f"  -> Initialized {total_tasks} total TextCraft benchmark tasks.")
 

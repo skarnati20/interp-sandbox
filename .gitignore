@@ -29,7 +29,9 @@ env.bak/
 venv.bak/
 
 # Data, Activations & Parquet Artifacts
-data/
+data/*
+!data/textcraft/
+!data/textcraft/recipes/
 *.safetensors
 *.parquet
 *.h5
