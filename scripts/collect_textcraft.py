@@ -32,6 +32,12 @@ def parse_args():
         help="Number of TextCraft tasks to generate and run (default: 50)",
     )
     parser.add_argument(
+        "--n_rollouts",
+        type=int,
+        default=1,
+        help="Number of rollouts per task (default: 1; use >= 3 for multi-rollout probing)",
+    )
+    parser.add_argument(
         "--min_depth",
         type=int,
         default=2,
@@ -60,7 +66,7 @@ def parse_args():
         "--temperature",
         type=float,
         default=0.0,
-        help="Generation temperature (0.0 = greedy)",
+        help="Generation temperature (0.0 = greedy, >0.0 for sampling across rollouts)",
     )
     return parser.parse_args()
 
@@ -75,6 +81,7 @@ def main():
     print(f"Model:            {args.model}")
     print(f"Save Mode:        {args.save_mode} ({'~200 KB/step' if args.save_mode == 'decision' else '~200 MB/step'})")
     print(f"Num Tasks:        {args.num_tasks}")
+    print(f"Rollouts / Task:  {args.n_rollouts}")
     print(f"Min Recipe Depth: {args.min_depth}")
     print(f"Max Steps/Ep:     {args.max_steps}")
     print(f"Output Directory: {output_path.resolve()}")
@@ -102,7 +109,12 @@ def main():
         save_mode=args.save_mode,
     )
 
-    results = runner.run_benchmark(max_tasks=args.num_tasks, max_steps=args.max_steps)
+    results = runner.run_benchmark(
+        max_tasks=args.num_tasks,
+        max_steps=args.max_steps,
+        n_rollouts=args.n_rollouts,
+        temperature=args.temperature,
+    )
 
     print("\n" + "=" * 60)
     print(f"Collection Complete! Saved to: {output_path.resolve()}")

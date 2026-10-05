@@ -192,7 +192,7 @@ class MiniWoBBenchmark(BaseBenchmark):
 
     def list_tasks(self, split: str = "train") -> list[TaskInstance]:
         tasks = []
-        for env_name in self.env_names:
+        for i, env_name in enumerate(self.env_names):
             for seed in self.seeds:
                 task_id = f"{env_name}_seed_{seed}"
                 tasks.append(
@@ -200,7 +200,7 @@ class MiniWoBBenchmark(BaseBenchmark):
                         task_id=task_id,
                         instruction=f"Complete the task in {env_name}",
                         system_prompt=self.DEFAULT_SYSTEM_PROMPT,
-                        info={"env_name": env_name, "seed": seed},
+                        info={"env_name": env_name, "seed": seed, "task_idx": i},
                     )
                 )
         return tasks
