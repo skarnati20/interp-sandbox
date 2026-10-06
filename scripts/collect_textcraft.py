@@ -38,6 +38,18 @@ def parse_args():
         help="Number of rollouts per task (default: 1; use >= 3 for multi-rollout probing)",
     )
     parser.add_argument(
+        "--balanced",
+        action="store_true",
+        default=True,
+        help="Sample evenly across recipe depths (Depths 1, 2, 3, 4) for a balanced ~40-50% success/failure distribution (default: True)",
+    )
+    parser.add_argument(
+        "--unbalanced",
+        action="store_false",
+        dest="balanced",
+        help="Disable balanced sampling and sort strictly by deepest tasks first",
+    )
+    parser.add_argument(
         "--easy",
         action="store_true",
         help="Run easier single-step / short-depth tasks first (great for fast validation)",
@@ -45,8 +57,8 @@ def parse_args():
     parser.add_argument(
         "--min_depth",
         type=int,
-        default=2,
-        help="Minimum recipe depth for goal selection (default: 2; use 1 for easy tasks)",
+        default=1,
+        help="Minimum recipe depth for goal selection (default: 1 for balanced)",
     )
     parser.add_argument(
         "--max_depth",
@@ -63,8 +75,8 @@ def parse_args():
     parser.add_argument(
         "--max_steps",
         type=int,
-        default=12,
-        help="Maximum crafting steps per episode before terminating",
+        default=16,
+        help="Maximum crafting steps per episode before terminating (default: 16)",
     )
     parser.add_argument(
         "--layers",
@@ -100,8 +112,9 @@ def main():
     args = parse_args()
     output_path = Path(args.output_dir)
 
-    min_depth = 1 if args.easy else args.min_depth
+    min_depth = 1 if (args.easy or args.balanced) else args.min_depth
     max_distractors = 2 if (args.easy and args.max_distractors == 10) else args.max_distractors
+    use_balanced = args.balanced and not args.easy
 
     print("=" * 60)
     print("TextCraft Activation Collection (Sharded Storage)")
@@ -109,7 +122,7 @@ def main():
     print(f"Model:            {args.model}")
     print(f"Num Tasks:        {args.num_tasks}")
     print(f"Rollouts / Task:  {args.n_rollouts}")
-    print(f"Easy Mode:        {args.easy}")
+    print(f"Sampling Mode:    {'Balanced Depths (1-4)' if use_balanced else ('Easy First' if args.easy else 'Deepest First')}")
     print(f"Min Recipe Depth: {min_depth}")
     print(f"Max Distractors:  {max_distractors}")
     print(f"Max Steps/Ep:     {args.max_steps}")
@@ -130,6 +143,7 @@ def main():
         max_depth=args.max_depth,
         max_distractors=max_distractors,
         easy_first=args.easy,
+        balanced=use_balanced,
     )
     total_tasks = len(benchmark.list_tasks())
     print(f"  -> Initialized {total_tasks} total TextCraft benchmark tasks.")

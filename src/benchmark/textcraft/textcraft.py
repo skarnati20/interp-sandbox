@@ -199,11 +199,12 @@ class TextCraftBenchmark(BaseBenchmark):
         self,
         recipes_path: Optional[str | Path] = None,
         num_tasks: int = 50,
-        min_depth: int = 2,
+        min_depth: int = 1,
         max_depth: Optional[int] = None,
         max_distractors: int = 10,
         seed: int = 42,
         easy_first: bool = False,
+        balanced: bool = True,
     ):
         self.recipes_path = self._resolve_recipes_path(recipes_path)
         self.num_tasks = num_tasks
@@ -212,6 +213,7 @@ class TextCraftBenchmark(BaseBenchmark):
         self.max_distractors = max_distractors
         self.seed = seed
         self.easy_first = easy_first
+        self.balanced = balanced
 
         self.crafting_tree = CraftingTree(self.recipes_path)
         self.parser = TextCraftActionParser()
@@ -255,16 +257,38 @@ class TextCraftBenchmark(BaseBenchmark):
         if self.max_depth is not None:
             items_with_depth = [x for x in items_with_depth if x[1] <= self.max_depth]
 
-        # Sort items deterministically: ascending if easy_first else descending by depth
-        if self.easy_first:
-            sorted_goals = sorted(items_with_depth, key=lambda x: (x[1], x[0]))
-        else:
-            sorted_goals = sorted(items_with_depth, key=lambda x: (-x[1], x[0]))
-
-        if not sorted_goals:
+        if not items_with_depth:
             raise ValueError(
                 f"No recipe items found with min_depth={self.min_depth} and max_depth={self.max_depth}"
             )
+
+        if self.balanced:
+            # Group items by recipe depth
+            by_depth: dict[int, list[str]] = {}
+            for item, d in items_with_depth:
+                by_depth.setdefault(d, []).append(item)
+
+            depths = sorted(by_depth.keys())
+            rng_select = random.Random(self.seed)
+            for d in depths:
+                rng_select.shuffle(by_depth[d])
+
+            # Interleave items across depths for balanced difficulty (Depths 1, 2, 3, 4)
+            sorted_goals: list[tuple[str, int]] = []
+            ptrs = {d: 0 for d in depths}
+            while len(sorted_goals) < self.num_tasks:
+                added_any = False
+                for d in depths:
+                    if ptrs[d] < len(by_depth[d]) and len(sorted_goals) < self.num_tasks:
+                        sorted_goals.append((by_depth[d][ptrs[d]], d))
+                        ptrs[d] += 1
+                        added_any = True
+                if not added_any:
+                    break
+        elif self.easy_first:
+            sorted_goals = sorted(items_with_depth, key=lambda x: (x[1], x[0]))
+        else:
+            sorted_goals = sorted(items_with_depth, key=lambda x: (-x[1], x[0]))
 
         tasks: list[TaskInstance] = []
         for task_idx in range(self.num_tasks):
