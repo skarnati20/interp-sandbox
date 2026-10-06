@@ -38,10 +38,27 @@ def parse_args():
         help="Number of rollouts per task (default: 1; use >= 3 for multi-rollout probing)",
     )
     parser.add_argument(
+        "--easy",
+        action="store_true",
+        help="Run easier single-step / short-depth tasks first (great for fast validation)",
+    )
+    parser.add_argument(
         "--min_depth",
         type=int,
         default=2,
-        help="Minimum recipe depth for goal selection (default: 2)",
+        help="Minimum recipe depth for goal selection (default: 2; use 1 for easy tasks)",
+    )
+    parser.add_argument(
+        "--max_depth",
+        type=int,
+        default=None,
+        help="Maximum recipe depth for goal selection (optional)",
+    )
+    parser.add_argument(
+        "--max_distractors",
+        type=int,
+        default=10,
+        help="Maximum distractor recipes shown in prompt (default: 10; use 0-2 for easy mode)",
     )
     parser.add_argument(
         "--max_steps",
@@ -83,13 +100,18 @@ def main():
     args = parse_args()
     output_path = Path(args.output_dir)
 
+    min_depth = 1 if args.easy else args.min_depth
+    max_distractors = 2 if (args.easy and args.max_distractors == 10) else args.max_distractors
+
     print("=" * 60)
     print("TextCraft Activation Collection (Sharded Storage)")
     print("=" * 60)
     print(f"Model:            {args.model}")
     print(f"Num Tasks:        {args.num_tasks}")
     print(f"Rollouts / Task:  {args.n_rollouts}")
-    print(f"Min Recipe Depth: {args.min_depth}")
+    print(f"Easy Mode:        {args.easy}")
+    print(f"Min Recipe Depth: {min_depth}")
+    print(f"Max Distractors:  {max_distractors}")
     print(f"Max Steps/Ep:     {args.max_steps}")
     print(f"Target Layers:    {args.layers or 'All Layers'}")
     print(f"Anchors:          {args.anchors}")
@@ -104,7 +126,10 @@ def main():
     print("\n[2/3] Initializing TextCraft crafting environment...")
     benchmark = TextCraftBenchmark(
         num_tasks=args.num_tasks,
-        min_depth=args.min_depth,
+        min_depth=min_depth,
+        max_depth=args.max_depth,
+        max_distractors=max_distractors,
+        easy_first=args.easy,
     )
     total_tasks = len(benchmark.list_tasks())
     print(f"  -> Initialized {total_tasks} total TextCraft benchmark tasks.")

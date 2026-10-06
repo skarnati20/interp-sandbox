@@ -134,7 +134,7 @@ class TextCraftBenchmark(BaseBenchmark):
     """
 
     DEFAULT_SYSTEM_PROMPT = (
-        "You are given useful crafting recipes to craft items in Minecraft.\n"
+        "You are an expert player playing a crafting game in Minecraft.\n"
         "You interact with the environment using the following actions:\n"
         "  - get <count> <item>: fetch raw base materials from the world\n"
         "  - craft <count> <target> using <count1> <ingredient1>, <count2> <ingredient2>, ...: craft items\n"
@@ -151,14 +151,18 @@ class TextCraftBenchmark(BaseBenchmark):
         recipes_path: Optional[str | Path] = None,
         num_tasks: int = 50,
         min_depth: int = 2,
+        max_depth: Optional[int] = None,
         max_distractors: int = 10,
         seed: int = 42,
+        easy_first: bool = False,
     ):
         self.recipes_path = self._resolve_recipes_path(recipes_path)
         self.num_tasks = num_tasks
         self.min_depth = min_depth
+        self.max_depth = max_depth
         self.max_distractors = max_distractors
         self.seed = seed
+        self.easy_first = easy_first
 
         self.crafting_tree = CraftingTree(self.recipes_path)
         self.parser = TextCraftActionParser()
@@ -199,11 +203,19 @@ class TextCraftBenchmark(BaseBenchmark):
 
     def _generate_tasks(self) -> list[TaskInstance]:
         items_with_depth = list(self.crafting_tree.item_recipes_min_depth(self.min_depth))
-        # Sort items deterministically by depth descending then alphabetically
-        sorted_goals = sorted(items_with_depth, key=lambda x: (-x[1], x[0]))
+        if self.max_depth is not None:
+            items_with_depth = [x for x in items_with_depth if x[1] <= self.max_depth]
+
+        # Sort items deterministically: ascending if easy_first else descending by depth
+        if self.easy_first:
+            sorted_goals = sorted(items_with_depth, key=lambda x: (x[1], x[0]))
+        else:
+            sorted_goals = sorted(items_with_depth, key=lambda x: (-x[1], x[0]))
 
         if not sorted_goals:
-            raise ValueError(f"No recipe items found with min_depth >= {self.min_depth}")
+            raise ValueError(
+                f"No recipe items found with min_depth={self.min_depth} and max_depth={self.max_depth}"
+            )
 
         tasks: list[TaskInstance] = []
         for task_idx in range(self.num_tasks):
