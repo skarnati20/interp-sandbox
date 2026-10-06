@@ -2,37 +2,48 @@
 
 A research sandbox for **Agentic Mechanistic Interpretability & Representation Engineering**.
 
-## Repository Structure
+## RunPod Instructions
 
-```text
-interp-sandbox/
-├── src/                               # REUSABLE CORE LIBRARY
-│   ├── activations.py                 # Forward pass & residual-stream activation extraction
-│   ├── store.py                       # Safetensors & Parquet trajectory serialization
-│   ├── runner.py                      # Multi-turn agent interaction loop
-│   └── benchmark/
-│       ├── __init__.py
-│       ├── base.py                    # Universal BaseBenchmark interface
-│       └── miniwob.py                 # MiniWoB++ adapter (DOM formatter & action parser)
-├── scripts/                           # BENCHMARK-SPECIFIC EXECUTABLES
-│   ├── setup_miniwob.sh               # RunPod / Linux setup script for MiniWoB++
-│   └── collect_miniwob.py             # MiniWoB++ data collection runner
-├── test_local.py                      # Fast local pipeline verification script
-├── requirements.txt                   # Minimal Python dependencies
-└── README.md
-```
-
-## Quick Start
-
-You can verify the pipeline with the MiniWoB++ benchmark as so:
+Clone the repo:
 
 ```bash
-# 1. Install dependencies
-pip install -r requirements.txt
+cd /workspace
+git clone https://github.com/skarnati20/interp-sandbox.git
+cd interp-sandbox
+```
 
-# 2. Run mock dry-run (no GPU / model download required)
-python test_local.py
+Run desired setup script:
 
-# 3. (Optional) Run with local small model (Qwen-0.5B)
-python test_local.py --real-model
+```bash
+./scripts/setup_textcraft.sh
+```
+
+Start `tmux` sessions:
+
+```bash
+tmux new -s textcraft
+```
+
+Run benchmark script to generate activations:
+
+```bash
+python scripts/collect_textcraft.py \
+  --model Qwen/Qwen2.5-Coder-7B-Instruct \
+  --num_tasks 50 \
+  --n_rollouts 5 \
+  --max_steps 16 \
+  --temperature 0.7 \
+  --layers 20 \
+  --anchors post_gen pre_gen \
+  --output_dir artifacts/textcraft/qwen2.5-7b/qwen2.5-7b
+```
+
+Upload to HuggingFace:
+
+```bash
+python scripts/export.py \
+  --data_dir artifacts/textcraft/qwen2.5-7b/qwen2.5-7b \
+  --repo_id <YOUR_HF_USERNAME>/textcraft-qwen7b-activations \
+  --token hf_YOUR_WRITE_TOKEN_HERE \
+  --commit_message "Upload TextCraft Qwen2.5-Coder-7B residual activations"
 ```
