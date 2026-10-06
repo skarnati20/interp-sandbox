@@ -1,18 +1,14 @@
 #!/usr/bin/env bash
 set -e
 
-echo "=== [TextCraft] Installing System Dependencies on RunPod ==="
+echo "=== [TextCraft] Installing Core Sandbox Requirements on RunPod ==="
 apt-get update && apt-get install -y \
     git \
     git-lfs
 
-echo "=== Installing Core Sandbox Requirements ==="
+echo "=== Installing Python Requirements ==="
 pip install --upgrade pip
 pip install -r requirements.txt
-
-echo "=== Installing TextCraft Benchmark Requirements ==="
-pip install \
-    gymnasium>=0.29.0
 
 echo "=== TextCraft Setup Complete! ==="
 echo "To run TextCraft Qwen2.5-Coder-7B data collection:"

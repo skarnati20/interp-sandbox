@@ -13,7 +13,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.activations import ActivationExtractor
-from src.benchmark import TextCraftBenchmark
+from src.benchmark.textcraft import TextCraftBenchmark
 from src.runner import Runner
 
 
@@ -61,7 +61,7 @@ def parse_args():
         type=str,
         nargs="+",
         default=["post_gen", "pre_gen"],
-        choices=["post_gen", "pre_gen"],
+        choices=["post_gen", "pre_gen", "first_gen", "mean_gen", "mean_prompt", "thought_end"],
         help="Anchors to extract (default: post_gen pre_gen)",
     )
     parser.add_argument(

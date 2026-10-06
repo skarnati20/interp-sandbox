@@ -5,7 +5,7 @@ from typing import Optional
 import uuid
 
 from src.activations import ActivationExtractor, ExtractionResult
-from src.benchmark import BaseBenchmark, StepObservation, TaskInstance
+from src.benchmark.base import BaseBenchmark, StepObservation, TaskInstance
 from src.store import ShardWriter, save_run_summary
 
 

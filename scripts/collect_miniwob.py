@@ -12,7 +12,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.activations import ActivationExtractor
-from src.benchmark import MiniWoBBenchmark
+from src.benchmark.miniwob import MiniWoBBenchmark
 from src.runner import Runner
 
 
@@ -48,13 +48,6 @@ def parse_args():
         help="MiniWoB environment names, 'all', or 'dom_only'",
     )
     parser.add_argument(
-        "--save_mode",
-        type=str,
-        choices=["decision", "all"],
-        default="decision",
-        help="Activation storage mode: 'decision' (default, ~200KB/step) or 'all' (~200MB/step)",
-    )
-    parser.add_argument(
         "--episodes_per_env",
         type=int,
         default=1,
@@ -69,8 +62,8 @@ def parse_args():
     parser.add_argument(
         "--max_steps",
         type=int,
-        default=8,
-        help="Maximum steps per episode before terminating",
+        default=10,
+        help="Maximum interaction steps per episode before terminating",
     )
     parser.add_argument(
         "--output_dir",
@@ -106,7 +99,6 @@ def main():
     print("=" * 60)
     print(f"Model:            {args.model}")
     print(f"Environments:     {display_envs}")
-    print(f"Save Mode:        {args.save_mode} ({'~200 KB/step' if args.save_mode == 'decision' else '~200 MB/step'})")
     print(f"Episodes/Env:     {args.episodes_per_env}")
     print(f"Max Steps/Ep:     {args.max_steps}")
     print(f"Output Directory: {args.output_dir}")
@@ -119,8 +111,7 @@ def main():
     # 2. Initialize MiniWoB Benchmark
     print("\n[2/3] Initializing MiniWoB environments...")
     benchmark = MiniWoBBenchmark(
-        env_names=env_selection,
-        episodes_per_env=args.episodes_per_env,
+        env_names=env_selection if isinstance(env_selection, list) else None,
     )
     total_tasks = len(benchmark.list_tasks())
     print(f"  -> Generated {total_tasks} total benchmark tasks.")
@@ -132,10 +123,14 @@ def main():
         extractor=extractor,
         benchmark=benchmark,
         output_dir=output_path,
-        save_mode=args.save_mode,
     )
 
-    results = runner.run_benchmark(max_tasks=args.num_episodes, max_steps=args.max_steps)
+    results = runner.run_benchmark(
+        max_tasks=args.num_episodes,
+        max_steps=args.max_steps,
+        n_rollouts=args.episodes_per_env,
+        temperature=args.temperature,
+    )
 
     print("\n" + "=" * 60)
     print(f"Collection Complete! Saved to: {output_path.resolve()}")

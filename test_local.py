@@ -8,7 +8,8 @@ import numpy as np
 import torch
 
 from src.activations import ActivationExtractor
-from src.benchmark import MiniWoBBenchmark, TaskInstance
+from src.benchmark.base import TaskInstance
+from src.benchmark.miniwob import MiniWoBBenchmark
 from src.runner import Runner
 from src.store import load_run_summary
 
