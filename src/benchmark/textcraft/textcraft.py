@@ -40,7 +40,7 @@ class TextCraftActionParser:
     """
     Robust action parser for LLM outputs in TextCraft.
     Handles thinking tags (<think>...</think>), ReAct prefixes ('Action:', 'Command:'),
-    markdown codeblocks, and conversational natural language.
+    markdown codeblocks, conversational words ('more'), and natural language.
     """
 
     @staticmethod
@@ -87,8 +87,10 @@ class TextCraftActionParser:
             if re.match(r"^inventory\b", cand_clean, re.IGNORECASE):
                 return ParsedAction(action_type="inventory")
 
-            # 3. Get action: get <count> <item> or get <item>
-            get_match = re.search(r"\bget\s+(\d+)\s+([a-zA-Z0-9_\s\-]+)$", cand_clean, re.IGNORECASE)
+            # 3. Get action: get <count> [more] <item> or get [more] <item>
+            get_match = re.search(
+                r"\bget\s+(\d+)\s+(?:more\s+)?([a-zA-Z0-9_\s\-]+)$", cand_clean, re.IGNORECASE
+            )
             if get_match:
                 return ParsedAction(
                     action_type="get",
@@ -96,7 +98,9 @@ class TextCraftActionParser:
                     target_count=int(get_match.group(1)),
                 )
 
-            get_simple_match = re.search(r"\bget\s+([a-zA-Z0-9_\s\-]+)$", cand_clean, re.IGNORECASE)
+            get_simple_match = re.search(
+                r"\bget\s+(?:more\s+)?([a-zA-Z0-9_\s\-]+)$", cand_clean, re.IGNORECASE
+            )
             if get_simple_match and not get_simple_match.group(1).strip().lower().startswith("ready"):
                 return ParsedAction(
                     action_type="get",
