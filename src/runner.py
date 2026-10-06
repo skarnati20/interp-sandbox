@@ -24,6 +24,7 @@ class Runner:
         layer_ids: Optional[list[int]] = None,
         anchors: Optional[list[str]] = None,
         shard_size: int = 2000,
+        verbose: bool = True,
     ):
         self.extractor = extractor
         self.benchmark = benchmark
@@ -31,6 +32,7 @@ class Runner:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.layer_ids = layer_ids
         self.anchors = anchors or ["post_gen", "pre_gen"]
+        self.verbose = verbose
 
         # Sharded storage writer for features
         self.features_dir = self.output_dir / "features"
@@ -81,6 +83,10 @@ class Runner:
 
                 obs: StepObservation = self.benchmark.step(action_text)
                 total_reward += obs.step_reward
+
+                if self.verbose:
+                    first_line = action_text.split('\n')[0] if '\n' in action_text else action_text
+                    print(f"    [Step {step_idx + 1}] Action: '{first_line[:70]}' -> Obs: '{obs.observation_text[:70]}'")
 
                 step_meta = {
                     "episode_id": episode_id,

@@ -37,92 +37,128 @@ class ParsedAction:
 
 
 class TextCraftActionParser:
-    """Parses agent textual action strings into environment actions."""
+    """
+    Robust action parser for LLM outputs in TextCraft.
+    Handles thinking tags (<think>...</think>), ReAct prefixes ('Action:', 'Command:'),
+    markdown codeblocks, and conversational natural language.
+    """
 
     @staticmethod
     def parse(action_str: str) -> ParsedAction:
         clean = action_str.strip()
-        clean = re.sub(r"^>\s*", "", clean)  # Strip leading prompt markers
 
-        # 1. Think
-        if clean.lower().startswith("think:") or clean.lower().startswith("think"):
-            thought_text = re.sub(r"^think:?\s*", "", clean, flags=re.IGNORECASE)
-            return ParsedAction(action_type="think", raw_text=thought_text)
+        # 1. Extract thought if <think>...</think> present
+        think_match = re.search(r"<think>(.*?)</think>", clean, re.DOTALL | re.IGNORECASE)
+        thought_trace = think_match.group(1).strip() if think_match else ""
 
-        # 2. Inventory
-        if clean.lower().startswith("inventory"):
-            return ParsedAction(action_type="inventory")
+        # Remove <think>...</think> blocks from execution parsing
+        clean_text = re.sub(r"<think>.*?</think>", "", clean, flags=re.DOTALL | re.IGNORECASE).strip()
 
-        # 3. Get action: get <count> <item> or get <item>
-        get_match = re.match(r"^get\s+(\d+)\s+(.+)$", clean, re.IGNORECASE)
-        if get_match:
-            count = int(get_match.group(1))
-            item = get_match.group(2).strip().rstrip(".")
-            return ParsedAction(
-                action_type="get",
-                target=item,
-                target_count=count,
+        # Remove markdown code blocks ```...```
+        clean_text = re.sub(r"```(?:[a-zA-Z0-9_\-]+)?\n?", "", clean_text)
+        clean_text = clean_text.replace("```", "").strip()
+
+        # Search candidate lines
+        candidates = []
+        for line in clean_text.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            # Strip common LLM prefixes: "Action:", "Command:", "> ", "- ", "1. "
+            line_clean = re.sub(
+                r"^(?:action|command|step \d+|turn \d+)\s*:\s*", "", line, flags=re.IGNORECASE
             )
+            line_clean = re.sub(r"^>\s*", "", line_clean)
+            line_clean = re.sub(r"^[-*]\s*", "", line_clean)
+            line_clean = line_clean.strip()
+            candidates.append(line_clean)
 
-        get_simple_match = re.match(r"^get\s+(.+)$", clean, re.IGNORECASE)
-        if get_simple_match:
-            item = get_simple_match.group(1).strip().rstrip(".")
-            return ParsedAction(
-                action_type="get",
-                target=item,
-                target_count=1,
+        # Look through candidate lines for action keywords
+        for cand in candidates:
+            # 1. Think
+            if re.match(r"^think:?\s*", cand, re.IGNORECASE):
+                thought_text = re.sub(r"^think:?\s*", "", cand, flags=re.IGNORECASE)
+                return ParsedAction(action_type="think", raw_text=thought_text)
+
+            # Strip trailing punctuation for execution matching
+            cand_clean = cand.rstrip(".!?;:,").strip()
+
+            # 2. Inventory
+            if re.match(r"^inventory\b", cand_clean, re.IGNORECASE):
+                return ParsedAction(action_type="inventory")
+
+            # 3. Get action: get <count> <item> or get <item>
+            get_match = re.search(r"\bget\s+(\d+)\s+([a-zA-Z0-9_\s\-]+)$", cand_clean, re.IGNORECASE)
+            if get_match:
+                return ParsedAction(
+                    action_type="get",
+                    target=get_match.group(2).strip().rstrip("."),
+                    target_count=int(get_match.group(1)),
+                )
+
+            get_simple_match = re.search(r"\bget\s+([a-zA-Z0-9_\s\-]+)$", cand_clean, re.IGNORECASE)
+            if get_simple_match and not get_simple_match.group(1).strip().lower().startswith("ready"):
+                return ParsedAction(
+                    action_type="get",
+                    target=get_simple_match.group(1).strip().rstrip("."),
+                    target_count=1,
+                )
+
+            # 4. Craft action: craft <count> <item> using <count1> <ing1>, ...
+            craft_match = re.search(
+                r"\bcraft\s+(\d+)\s+([a-zA-Z0-9_\s\-]+?)\s+using\s+(.+)$",
+                cand_clean,
+                re.IGNORECASE,
             )
+            if craft_match:
+                target_count = int(craft_match.group(1))
+                target_item = craft_match.group(2).strip()
+                ing_raw = craft_match.group(3).strip()
 
-        # 4. Craft action: craft <count> <item> using <count1> <ing1>, <count2> <ing2>...
-        craft_match = re.match(
-            r"^craft\s+(\d+)\s+(.+?)\s+using\s+(.+)$",
-            clean,
-            re.IGNORECASE,
-        )
-        if craft_match:
-            target_count = int(craft_match.group(1))
-            target_item = craft_match.group(2).strip()
-            ing_raw = craft_match.group(3).strip()
+                ingredients = []
+                for part in ing_raw.split(","):
+                    part = part.strip().rstrip(".")
+                    part_match = re.search(r"(\d+)\s+([a-zA-Z0-9_\s\-]+)", part)
+                    if part_match:
+                        ingredients.append((part_match.group(2).strip(), int(part_match.group(1))))
+                    elif part:
+                        ingredients.append((part, 1))
 
-            ingredients = []
-            for part in ing_raw.split(","):
-                part = part.strip().rstrip(".")
-                part_match = re.match(r"^(\d+)\s+(.+)$", part)
-                if part_match:
-                    ingredients.append((part_match.group(2).strip(), int(part_match.group(1))))
-                elif part:
-                    ingredients.append((part, 1))
+                return ParsedAction(
+                    action_type="craft",
+                    target=target_item,
+                    target_count=target_count,
+                    ingredients=ingredients,
+                )
 
-            return ParsedAction(
-                action_type="craft",
-                target=target_item,
-                target_count=target_count,
-                ingredients=ingredients,
+            # Craft without count: craft <item> using <ingredients>
+            craft_no_cnt = re.search(
+                r"\bcraft\s+([a-zA-Z0-9_\s\-]+?)\s+using\s+(.+)$",
+                cand_clean,
+                re.IGNORECASE,
             )
+            if craft_no_cnt:
+                target_item = craft_no_cnt.group(1).strip()
+                ing_raw = craft_no_cnt.group(2).strip()
+                ingredients = []
+                for part in ing_raw.split(","):
+                    part = part.strip().rstrip(".")
+                    part_match = re.search(r"(\d+)\s+([a-zA-Z0-9_\s\-]+)", part)
+                    if part_match:
+                        ingredients.append((part_match.group(2).strip(), int(part_match.group(1))))
+                    elif part:
+                        ingredients.append((part, 1))
 
-        # Fallback craft without count: craft <item> using <ingredients>
-        craft_no_cnt = re.match(
-            r"^craft\s+(.+?)\s+using\s+(.+)$",
-            clean,
-            re.IGNORECASE,
-        )
-        if craft_no_cnt:
-            target_item = craft_no_cnt.group(1).strip()
-            ing_raw = craft_no_cnt.group(2).strip()
-            ingredients = []
-            for part in ing_raw.split(","):
-                part = part.strip().rstrip(".")
-                part_match = re.match(r"^(\d+)\s+(.+)$", part)
-                if part_match:
-                    ingredients.append((part_match.group(2).strip(), int(part_match.group(1))))
-                elif part:
-                    ingredients.append((part, 1))
-            return ParsedAction(
-                action_type="craft",
-                target=target_item,
-                target_count=1,
-                ingredients=ingredients,
-            )
+                return ParsedAction(
+                    action_type="craft",
+                    target=target_item,
+                    target_count=1,
+                    ingredients=ingredients,
+                )
+
+        # Fallback if thought block alone was output
+        if thought_trace:
+            return ParsedAction(action_type="think", raw_text=thought_trace)
 
         return ParsedAction(action_type="unknown", raw_text=clean)
 
@@ -134,16 +170,25 @@ class TextCraftBenchmark(BaseBenchmark):
     """
 
     DEFAULT_SYSTEM_PROMPT = (
-        "You are an expert player playing a crafting game in Minecraft.\n"
-        "You interact with the environment using the following actions:\n"
+        "You are an autonomous player playing a Minecraft crafting environment.\n"
+        "At each turn, output ONLY the single command you want to execute next.\n\n"
+        "Valid Commands:\n"
         "  - get <count> <item>: fetch raw base materials from the world\n"
-        "  - craft <count> <target> using <count1> <ingredient1>, <count2> <ingredient2>, ...: craft items\n"
+        "  - craft <count> <target> using <count1> <ingredient1>, ...: craft items\n"
         "  - inventory: inspect your current inventory\n"
-        "  - think: <thought>: perform reasoning steps (returns 'OK.')\n\n"
+        "  - think: <thought>: internal reasoning (returns 'OK.')\n\n"
+        "Example Gameplay:\n"
+        "Goal: craft acacia planks.\n"
+        "Crafting commands:\n"
+        "craft 4 acacia planks using 1 acacia logs\n\n"
+        "Turn 1:\n"
+        "get 1 acacia logs\n\n"
+        "Turn 2:\n"
+        "craft 4 acacia planks using 1 acacia logs\n\n"
         "Rules:\n"
-        "  1. You start with an empty inventory. Fetch raw base materials before crafting.\n"
-        "  2. You cannot 'get' items that are craftable (you must craft them from raw materials).\n"
-        "  3. Follow exact crafting recipes and counts provided in the command list."
+        "  1. Start with an empty inventory. Fetch raw base materials before crafting.\n"
+        "  2. Intermediate craftable items cannot be fetched; craft them according to the commands.\n"
+        "  3. Respond strictly with the exact command to execute."
     )
 
     def __init__(
@@ -423,7 +468,7 @@ class TextCraftBenchmark(BaseBenchmark):
                         done = True
 
         else:
-            obs_text = f"Could not execute {action_str}"
+            obs_text = f"Could not execute '{action_str}'"
 
         return StepObservation(
             observation_text=obs_text,

@@ -62,6 +62,22 @@ class TestTextCraftActionParser(unittest.TestCase):
         self.assertEqual(res.target_count, 4)
         self.assertEqual(res.ingredients, [("oak log", 1)])
 
+    def test_parse_llm_formats(self):
+        # Action with <think> tag
+        res_think = TextCraftActionParser.parse(
+            "<think>\nI need oak logs first.\n</think>\nAction: get 1 oak logs"
+        )
+        self.assertEqual(res_think.action_type, "get")
+        self.assertEqual(res_think.target, "oak logs")
+
+        # Markdown block with Action prefix
+        res_md = TextCraftActionParser.parse(
+            "```bash\nAction: craft 4 oak planks using 1 oak logs\n```"
+        )
+        self.assertEqual(res_md.action_type, "craft")
+        self.assertEqual(res_md.target, "oak planks")
+        self.assertEqual(res_md.target_count, 4)
+
     def test_parse_inventory_and_think(self):
         res_inv = TextCraftActionParser.parse("inventory")
         self.assertEqual(res_inv.action_type, "inventory")
