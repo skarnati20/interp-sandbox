@@ -61,6 +61,12 @@ def parse_args():
         help="Generation temperature (default: 0.7 for diverse stochastic rollouts)",
     )
     parser.add_argument(
+        "--action_delay",
+        type=float,
+        default=0.5,
+        help="Post-action browser stabilization delay in seconds (default: 0.5s for DOM animations)",
+    )
+    parser.add_argument(
         "--layers",
         type=int,
         nargs="+",
@@ -94,6 +100,7 @@ def main():
     print(f"Tasks:              {args.num_tasks} (Rollouts per task: {args.n_rollouts})")
     print(f"Total Episodes:     {args.num_tasks * args.n_rollouts}")
     print(f"Max Turns / Ep:     {args.max_steps}")
+    print(f"Action Delay:       {args.action_delay}s (DOM stabilization)")
     print(f"Temperature:        {args.temperature}")
     print(f"Target Layers:      {args.layers}")
     print(f"Anchor Positions:   {args.anchors}")
@@ -110,6 +117,7 @@ def main():
         all_envs=args.all_envs,
         dom_only=args.dom_only,
         num_tasks=args.num_tasks,
+        action_delay=args.action_delay,
     )
     print(f"  -> Initialized {len(benchmark.list_tasks())} total MiniWoB++ benchmark tasks.")
 
