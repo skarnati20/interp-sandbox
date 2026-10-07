@@ -85,7 +85,7 @@ class MiniWoBActionParser:
             "ref": 0,
             "text": "",
             "key": 0,
-            "coords": np.zeros(2, dtype=np.float32),
+            "coords": np.array([50.0, 50.0], dtype=np.float32),
             "field": 0,
         }
 
@@ -133,17 +133,17 @@ class MiniWoBActionParser:
             dx = float(scroll_match.group(1))
             dy = float(scroll_match.group(2))
             res["action_type"] = ACTION_TYPE_INDEX.get(ActionTypes.MOVE_COORDS, 1)
-            res["coords"] = np.array([dx, dy], dtype=np.float32)
+            res["coords"] = np.array([max(10.0, dx), max(10.0, dy)], dtype=np.float32)
             return res
 
         if re.search(r"SCROLL_DOWN", action_str, re.IGNORECASE):
             res["action_type"] = ACTION_TYPE_INDEX.get(ActionTypes.SCROLL_DOWN_COORDS, 7)
-            res["coords"] = np.array([0.0, 100.0], dtype=np.float32)
+            res["coords"] = np.array([50.0, 100.0], dtype=np.float32)
             return res
 
         if re.search(r"SCROLL_UP", action_str, re.IGNORECASE):
             res["action_type"] = ACTION_TYPE_INDEX.get(ActionTypes.SCROLL_UP_COORDS, 6)
-            res["coords"] = np.array([0.0, -100.0], dtype=np.float32)
+            res["coords"] = np.array([50.0, 10.0], dtype=np.float32)
             return res
 
         # 5. Fallback integer: single integer -> CLICK(ref=X)
@@ -278,22 +278,38 @@ class MiniWoBBenchmark(BaseBenchmark):
             raise RuntimeError("Environment not initialized. Call reset() before step().")
 
         parsed_action = self.parser.parse(action_str)
-        obs, reward, terminated, truncated, info = self._active_env.step(parsed_action)
-        self._last_raw_obs = obs
 
-        is_done = terminated or truncated
-        utterance = obs.get("utterance", "")
-        dom_elements = obs.get("dom_elements", ())
-        formatted_dom = self.formatter.format_dom(dom_elements)
+        try:
+            obs, reward, terminated, truncated, info = self._active_env.step(parsed_action)
+            self._last_raw_obs = obs
 
-        prompt_obs = f"Goal: {utterance}\n\nVisible DOM Elements:\n{formatted_dom}"
+            is_done = terminated or truncated
+            utterance = obs.get("utterance", "")
+            dom_elements = obs.get("dom_elements", ())
+            formatted_dom = self.formatter.format_dom(dom_elements)
 
-        return StepObservation(
-            observation_text=prompt_obs,
-            step_reward=float(reward),
-            is_done=is_done,
-            info={"reward": reward, "terminated": terminated, "truncated": truncated, "info": info},
-        )
+            prompt_obs = f"Goal: {utterance}\n\nVisible DOM Elements:\n{formatted_dom}"
+
+            return StepObservation(
+                observation_text=prompt_obs,
+                step_reward=float(reward),
+                is_done=is_done,
+                info={"reward": reward, "terminated": terminated, "truncated": truncated, "info": info},
+            )
+        except Exception as e:
+            # Handle out-of-bounds or invalid clicks gracefully without crashing the benchmark
+            err_msg = str(e).split("\n")[0]
+            prev_utterance = self._last_raw_obs.get("utterance", "") if isinstance(self._last_raw_obs, dict) else ""
+            prev_dom = self._last_raw_obs.get("dom_elements", ()) if isinstance(self._last_raw_obs, dict) else ()
+            formatted_dom = self.formatter.format_dom(prev_dom)
+            prompt_obs = f"Action warning ({err_msg}).\n\nGoal: {prev_utterance}\n\nVisible DOM Elements:\n{formatted_dom}"
+
+            return StepObservation(
+                observation_text=prompt_obs,
+                step_reward=0.0,
+                is_done=False,
+                info={"error": str(e)},
+            )
 
     def evaluate(self, task: TaskInstance) -> bool:
         if self._last_raw_obs is None:
