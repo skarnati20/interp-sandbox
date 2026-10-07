@@ -211,7 +211,7 @@ class MiniWoBBenchmark(BaseBenchmark):
     ):
         if env_names is not None:
             self.env_names = env_names
-        elif all_envs:
+        elif all_envs and not dom_only:
             all_registered = [env_id for env_id in gymnasium.envs.registry.keys() if "miniwob/" in env_id]
             self.env_names = sorted(all_registered) if all_registered else self.CORE_ENVS
         else:
@@ -226,6 +226,7 @@ class MiniWoBBenchmark(BaseBenchmark):
         self._active_env: Optional[gymnasium.Env] = None
         self._active_task: Optional[TaskInstance] = None
         self._last_raw_obs: Optional[dict] = None
+        self._last_reward: float = 0.0
 
     def list_tasks(self, split: str = "train") -> list[TaskInstance]:
         tasks = []
@@ -259,6 +260,7 @@ class MiniWoBBenchmark(BaseBenchmark):
         obs, info = self._active_env.reset(seed=env_seed)
         self._last_raw_obs = obs
         self._active_task = task
+        self._last_reward = 0.0
 
         utterance = obs.get("utterance", task.instruction)
         dom_elements = obs.get("dom_elements", ())
@@ -282,6 +284,7 @@ class MiniWoBBenchmark(BaseBenchmark):
         try:
             obs, reward, terminated, truncated, info = self._active_env.step(parsed_action)
             self._last_raw_obs = obs
+            self._last_reward = float(reward)
 
             is_done = terminated or truncated
             utterance = obs.get("utterance", "")
@@ -312,10 +315,7 @@ class MiniWoBBenchmark(BaseBenchmark):
             )
 
     def evaluate(self, task: TaskInstance) -> bool:
-        if self._last_raw_obs is None:
-            return False
-        last_reward = self._last_raw_obs.get("reward", 0.0) if isinstance(self._last_raw_obs, dict) else 0.0
-        return last_reward > 0.0
+        return self._last_reward > 0.0
 
     def close(self) -> None:
         if self._active_env is not None:
@@ -326,3 +326,4 @@ class MiniWoBBenchmark(BaseBenchmark):
             self._active_env = None
         self._active_task = None
         self._last_raw_obs = None
+        self._last_reward = 0.0
