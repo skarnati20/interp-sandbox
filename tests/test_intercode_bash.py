@@ -10,18 +10,18 @@ from src.benchmark.intercode.bash import InterCodeBashBenchmark
 
 class TestInterCodeBashBenchmark(unittest.TestCase):
     def setUp(self):
-        self.bench = InterCodeBashBenchmark()
+        self.bench = InterCodeBashBenchmark(num_tasks=100)
         self.tasks = self.bench.list_tasks()
 
     def tearDown(self):
         self.bench.close()
 
     def test_task_suite_generation(self):
-        self.assertEqual(len(self.tasks), 50)
+        self.assertEqual(len(self.tasks), 100)
         self.assertTrue(self.tasks[0].task_id.startswith("intercode-bash/"))
 
     def test_extract_emails_task(self):
-        task = self.tasks[0]  # extract_emails
+        task = self.tasks[0]  # extract_valid_emails
         obs = self.bench.reset(task)
         self.assertIn("data.txt", obs.observation_text)
 
@@ -37,13 +37,15 @@ class TestInterCodeBashBenchmark(unittest.TestCase):
         self.assertTrue(submit_obs.info["success"])
         self.assertTrue(self.bench.evaluate(task))
 
-    def test_count_errors_task(self):
-        task = self.tasks[1]  # count_errors
+    def test_extract_error_codes_task(self):
+        task = self.tasks[1]  # extract_error_codes
         obs = self.bench.reset(task)
         self.assertIn("server.log", obs.observation_text)
 
-        # Run count command
-        self.bench.step("grep -c 'ERROR' server.log > error_count.txt")
+        # Run extraction command
+        self.bench.step(
+            "grep 'ERROR' server.log | sed -E 's/.*\\[([0-9]{3})\\].*/\\1/' > error_codes.txt"
+        )
 
         # Evaluate
         self.assertTrue(self.bench.evaluate(task))

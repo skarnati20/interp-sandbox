@@ -1,11 +1,15 @@
 """
 InterCode-Bash Benchmark: Interactive Linux Command-Line and Shell Environment.
-Implementation based on InterCode (Yang et al., NeurIPS 2023) and 'Do Agents Know When They Succeed' (2026).
+Expanded suite of 100 challenging, multi-step Linux administration, data wrangling,
+filesystem restructuring, and pipeline parsing tasks.
 """
 
 from dataclasses import dataclass, field
+import hashlib
+import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -25,197 +29,299 @@ class BashTaskSpec:
 
 def create_task_suite() -> list[BashTaskSpec]:
     """
-    Creates 50 standard multi-step InterCode-Bash tasks across 5 core domains:
-    1. Text Processing & Regex (grep, sed, awk, cut, sort, uniq)
-    2. File & Directory Management (mkdir, cp, mv, find, tree)
-    3. Log Parsing & Data Extraction (wc, tr, pipeline chains)
-    4. Permissions & File Attributes (chmod, touch, stat)
-    5. Archiving & Compression (tar, gzip, zip)
+    Creates 100 challenging multi-step InterCode-Bash tasks across 6 core domains:
+    1. Advanced Text Processing & Regex (grep, sed, awk, cut, sort, uniq, tr)
+    2. Deep Filesystem Restructuring & Tree Operations (find, mv, cp, symlinks)
+    3. Complex Shell Pipelines & Data Wrangling (grouping, aggregation, set diffs)
+    4. Permissions, Security & File Metadata (chmod, stat, broken symlinks)
+    5. Multi-format Archiving & Compression (nested tar/zip, gzip)
+    6. Codebase Debugging & Patching (diffs, line-endings, syntax repair)
     """
     tasks: list[BashTaskSpec] = []
 
-    # --- Domain 1: Text Processing & Regex ---
-    def setup_grep_emails(p: Path):
+    # =========================================================================
+    # Domain 1: Advanced Text Processing & Regex (Tasks 1–20)
+    # =========================================================================
+
+    def setup_01(p: Path):
         (p / "data.txt").write_text(
             "Alice alice@example.com 24\nBob invalid-email 30\nCharlie charlie@work.org 29\nDavid david@test.com 45\n"
         )
-    def verify_grep_emails(p: Path):
+    def verify_01(p: Path):
         out = p / "emails.txt"
         if not out.exists(): return False
         content = sorted([x.strip() for x in out.read_text().splitlines() if x.strip()])
         return content == ["alice@example.com", "charlie@work.org", "david@test.com"]
-    tasks.append(BashTaskSpec("extract_emails", "Extract all valid email addresses from 'data.txt' into 'emails.txt', one per line.", setup_grep_emails, verify_grep_emails, ["text", "regex"]))
+    tasks.append(BashTaskSpec("extract_valid_emails", "Extract all valid email addresses from 'data.txt' into 'emails.txt', one per line in alphabetical order.", setup_01, verify_01, ["regex", "grep"]))
 
-    def setup_count_errors(p: Path):
+    def setup_02(p: Path):
         (p / "server.log").write_text(
-            "INFO: start\nERROR: database timeout\nINFO: retry\nERROR: connection refused\nWARN: high mem\nERROR: disk full\n"
+            "INFO: start\nERROR: database timeout [500]\nINFO: retry\nERROR: connection refused [502]\nWARN: high mem\nERROR: disk full [507]\n"
         )
-    def verify_count_errors(p: Path):
-        out = p / "error_count.txt"
-        if not out.exists(): return False
-        return out.read_text().strip() == "3"
-    tasks.append(BashTaskSpec("count_errors", "Count the number of lines containing 'ERROR' in 'server.log' and write the count to 'error_count.txt'.", setup_count_errors, verify_count_errors, ["text", "wc"]))
-
-    def setup_replace_word(p: Path):
-        (p / "config.txt").write_text("host=localhost\nport=8080\nenv=development\nmode=development\n")
-    def verify_replace_word(p: Path):
-        c = (p / "config.txt").read_text()
-        return "development" not in c and "env=production" in c and "mode=production" in c
-    tasks.append(BashTaskSpec("replace_env", "Replace all occurrences of 'development' with 'production' in 'config.txt'.", setup_replace_word, verify_replace_word, ["text", "sed"]))
-
-    def setup_sort_scores(p: Path):
-        (p / "scores.txt").write_text("Alice 85\nBob 92\nCharlie 78\nDavid 95\nEve 88\n")
-    def verify_sort_scores(p: Path):
-        out = p / "sorted.txt"
+    def verify_02(p: Path):
+        out = p / "error_codes.txt"
         if not out.exists(): return False
         lines = [x.strip() for x in out.read_text().splitlines() if x.strip()]
-        expected = ["David 95", "Bob 92", "Eve 88", "Alice 85", "Charlie 78"]
-        return lines == expected
-    tasks.append(BashTaskSpec("sort_scores", "Sort 'scores.txt' numerically in descending order by the second column (score) and save to 'sorted.txt'.", setup_sort_scores, verify_sort_scores, ["text", "sort"]))
+        return lines == ["500", "502", "507"]
+    tasks.append(BashTaskSpec("extract_error_codes", "Extract all 3-digit error codes inside square brackets on ERROR lines in 'server.log' and write them to 'error_codes.txt'.", setup_02, verify_02, ["text", "sed"]))
 
-    def setup_unique_ips(p: Path):
-        (p / "access.log").write_text("192.168.1.1\n10.0.0.1\n192.168.1.1\n172.16.0.1\n10.0.0.1\n192.168.1.2\n")
-    def verify_unique_ips(p: Path):
-        out = p / "unique_ips.txt"
+    def setup_03(p: Path):
+        (p / "config.txt").write_text("host=localhost\nport=8080\nenv=development\nmode=development_test\n")
+    def verify_03(p: Path):
+        c = (p / "config.txt").read_text()
+        return "development" not in c and "env=production" in c and "mode=production_test" in c
+    tasks.append(BashTaskSpec("replace_env_all", "Replace all occurrences of 'development' with 'production' in 'config.txt'.", setup_03, verify_03, ["text", "sed"]))
+
+    def setup_04(p: Path):
+        (p / "scores.txt").write_text("Alice 85 Engineering\nBob 92 Marketing\nCharlie 78 Engineering\nDavid 95 Sales\nEve 88 Engineering\n")
+    def verify_04(p: Path):
+        out = p / "eng_scores.txt"
         if not out.exists(): return False
-        lines = sorted([x.strip() for x in out.read_text().splitlines() if x.strip()])
-        return lines == ["10.0.0.1", "172.16.0.1", "192.168.1.1", "192.168.1.2"]
-    tasks.append(BashTaskSpec("unique_ips", "Extract all unique IP addresses from 'access.log' sorted alphabetically into 'unique_ips.txt'.", setup_unique_ips, verify_unique_ips, ["text", "uniq"]))
+        lines = [x.strip() for x in out.read_text().splitlines() if x.strip()]
+        return lines == ["Eve 88", "Alice 85", "Charlie 78"]
+    tasks.append(BashTaskSpec("filter_sort_department", "Filter 'scores.txt' for department 'Engineering', output only the Name and Score, and sort descending by Score into 'eng_scores.txt'.", setup_04, verify_04, ["text", "awk", "sort"]))
 
-    # --- Domain 2: File & Directory Management ---
-    def setup_create_nested_dirs(p: Path):
-        pass
-    def verify_create_nested_dirs(p: Path):
-        return (p / "src" / "components" / "utils").is_dir() and (p / "src" / "components" / "utils" / "index.js").is_file()
-    tasks.append(BashTaskSpec("create_nested_dirs", "Create directory 'src/components/utils' and create an empty file 'index.js' inside it.", setup_create_nested_dirs, verify_create_nested_dirs, ["fs", "mkdir"]))
-
-    def setup_move_jpg_files(p: Path):
-        (p / "raw").mkdir()
-        (p / "images").mkdir()
-        (p / "raw" / "photo1.jpg").write_text("img1")
-        (p / "raw" / "photo2.jpg").write_text("img2")
-        (p / "raw" / "doc.pdf").write_text("pdf")
-    def verify_move_jpg_files(p: Path):
-        return (p / "images" / "photo1.jpg").exists() and (p / "images" / "photo2.jpg").exists() and (p / "raw" / "doc.pdf").exists() and not (p / "raw" / "photo1.jpg").exists()
-    tasks.append(BashTaskSpec("move_images", "Move all '.jpg' files from 'raw/' into 'images/'. Leave other files in 'raw/'.", setup_move_jpg_files, verify_move_jpg_files, ["fs", "mv"]))
-
-    def setup_find_large_files(p: Path):
-        (p / "a.bin").write_bytes(b"0" * 1024 * 50)   # 50 KB
-        (p / "b.bin").write_bytes(b"0" * 1024 * 200)  # 200 KB
-        (p / "c.bin").write_bytes(b"0" * 1024 * 500)  # 500 KB
-    def verify_find_large_files(p: Path):
-        out = p / "large_files.txt"
-        if not out.exists(): return False
-        content = out.read_text().strip()
-        return "b.bin" in content and "c.bin" in content and "a.bin" not in content
-    tasks.append(BashTaskSpec("find_large_files", "Find all files in the current directory larger than 100KB and save their names/paths to 'large_files.txt'.", setup_find_large_files, verify_find_large_files, ["fs", "find"]))
-
-    def setup_delete_temp_files(p: Path):
-        (p / "main.py").write_text("print('hello')")
-        (p / "main.py.tmp").write_text("temp")
-        (p / "cache.tmp").write_text("temp")
-        (p / "sub").mkdir()
-        (p / "sub" / "data.tmp").write_text("temp")
-    def verify_delete_temp_files(p: Path):
-        return (p / "main.py").exists() and not (p / "main.py.tmp").exists() and not (p / "cache.tmp").exists() and not (p / "sub" / "data.tmp").exists()
-    tasks.append(BashTaskSpec("delete_tmp_files", "Recursively find and delete all files ending with '.tmp' in the directory tree.", setup_delete_temp_files, verify_delete_temp_files, ["fs", "rm"]))
-
-    # --- Domain 3: Data Parsing & Shell Pipelines ---
-    def setup_csv_column(p: Path):
-        (p / "users.csv").write_text("id,name,role\n1,Alice,Admin\n2,Bob,User\n3,Charlie,Admin\n4,David,User\n")
-    def verify_csv_column(p: Path):
-        out = p / "admins.txt"
-        if not out.exists(): return False
-        lines = sorted([x.strip() for x in out.read_text().splitlines() if x.strip()])
-        return lines == ["Alice", "Charlie"]
-    tasks.append(BashTaskSpec("filter_csv_admins", "Extract the names (column 2) of all users with role 'Admin' from 'users.csv' and save to 'admins.txt', one per line.", setup_csv_column, verify_csv_column, ["pipeline", "awk"]))
-
-    def setup_word_frequency(p: Path):
-        (p / "story.txt").write_text("apple banana apple orange banana apple\n")
-    def verify_word_frequency(p: Path):
-        out = p / "top_word.txt"
-        if not out.exists(): return False
-        return "apple" in out.read_text().strip().lower() and "3" in out.read_text()
-    tasks.append(BashTaskSpec("top_word_frequency", "Find the most frequent word and its count in 'story.txt' and save to 'top_word.txt'.", setup_word_frequency, verify_word_frequency, ["pipeline", "uniq"]))
-
-    def setup_combine_files(p: Path):
-        (p / "part1.txt").write_text("First line\n")
-        (p / "part2.txt").write_text("Second line\n")
-        (p / "part3.txt").write_text("Third line\n")
-    def verify_combine_files(p: Path):
-        out = p / "combined.txt"
-        if not out.exists(): return False
-        return out.read_text() == "First line\nSecond line\nThird line\n"
-    tasks.append(BashTaskSpec("combine_files", "Concatenate 'part1.txt', 'part2.txt', and 'part3.txt' in order into 'combined.txt'.", setup_combine_files, verify_combine_files, ["fs", "cat"]))
-
-    # --- Domain 4: Permissions & Attributes ---
-    def setup_chmod_executable(p: Path):
-        (p / "script.sh").write_text("#!/bin/bash\necho 'hello'\n")
-        os.chmod(p / "script.sh", 0o644)
-    def verify_chmod_executable(p: Path):
-        st = os.stat(p / "script.sh")
-        return bool(st.st_mode & 0o111)
-    tasks.append(BashTaskSpec("make_script_executable", "Make 'script.sh' executable for the user/owner.", setup_chmod_executable, verify_chmod_executable, ["perm", "chmod"]))
-
-    def setup_create_symlink(p: Path):
-        (p / "target.txt").write_text("Hello Target")
-    def verify_create_symlink(p: Path):
-        link = p / "link.txt"
-        return link.is_symlink() and link.resolve() == (p / "target.txt").resolve()
-    tasks.append(BashTaskSpec("create_symlink", "Create a symbolic link named 'link.txt' pointing to 'target.txt'.", setup_create_symlink, verify_create_symlink, ["fs", "ln"]))
-
-    # --- Domain 5: Archiving & Compression ---
-    def setup_tar_archive(p: Path):
-        (p / "project").mkdir()
-        (p / "project" / "app.py").write_text("app")
-        (p / "project" / "util.py").write_text("util")
-    def verify_tar_archive(p: Path):
-        tar_file = p / "project.tar.gz"
-        return tar_file.exists() and tar_file.stat().st_size > 0
-    tasks.append(BashTaskSpec("create_tar_archive", "Compress the 'project' directory into an archive named 'project.tar.gz'.", setup_tar_archive, verify_tar_archive, ["archive", "tar"]))
-
-    def setup_unzip_archive(p: Path):
-        proj = p / "temp_proj"
-        proj.mkdir()
-        (proj / "extracted.txt").write_text("Success!")
-        shutil.make_archive(str(p / "bundle"), 'zip', str(proj))
-        shutil.rmtree(str(proj))
-    def verify_unzip_archive(p: Path):
-        return (p / "extracted.txt").exists() and "Success!" in (p / "extracted.txt").read_text()
-    tasks.append(BashTaskSpec("unzip_bundle", "Extract the contents of 'bundle.zip' into the current working directory.", setup_unzip_archive, verify_unzip_archive, ["archive", "unzip"]))
-
-    # Programmatic variations to complete 50 tasks
-    base_count = len(tasks)
-    for i in range(50 - base_count):
-        idx = i + base_count
-        word = f"keyword_{idx}"
-        target_file = f"log_{idx}.txt"
-
-        def make_setup(w=word, tf=target_file):
-            def _setup(p: Path):
-                lines = [f"Line {j} with other info" for j in range(10)]
-                lines.insert(3, f"Line 3 with {w} match")
-                lines.insert(7, f"Line 7 with {w} match")
-                (p / tf).write_text("\n".join(lines) + "\n")
-            return _setup
-
-        def make_verify(w=word, tf=target_file, out_name=f"matches_{idx}.txt"):
-            def _verify(p: Path):
-                out = p / out_name
-                if not out.exists(): return False
-                lines = [x.strip() for x in out.read_text().splitlines() if x.strip()]
-                return len(lines) == 2 and all(w in l for l in lines)
-            return _verify
-
-        tasks.append(
-            BashTaskSpec(
-                name=f"filter_log_task_{idx}",
-                instruction=f"Find all lines containing '{word}' in '{target_file}' and write them to 'matches_{idx}.txt'.",
-                setup_fn=make_setup(word, target_file),
-                verify_fn=make_verify(word, target_file, f"matches_{idx}.txt"),
-                tags=["pipeline", "grep"],
-            )
+    def setup_05(p: Path):
+        (p / "access.log").write_text(
+            "192.168.1.1 GET /index.html 200\n10.0.0.1 POST /login 403\n192.168.1.1 GET /style.css 200\n172.16.0.1 GET /index.html 200\n10.0.0.1 GET /api 200\n192.168.1.1 GET /logo.png 200\n"
         )
+    def verify_05(p: Path):
+        out = p / "top_ip.txt"
+        if not out.exists(): return False
+        return "192.168.1.1" in out.read_text() and "3" in out.read_text()
+    tasks.append(BashTaskSpec("top_request_ip", "Find the IP address that made the most requests in 'access.log' and write the count and IP to 'top_ip.txt'.", setup_05, verify_05, ["text", "uniq", "sort"]))
+
+    def setup_06(p: Path):
+        (p / "fileA.txt").write_text("apple\nbanana\ncherry\ndate\nfig\n")
+        (p / "fileB.txt").write_text("banana\ndate\ngrape\n")
+    def verify_06(p: Path):
+        out = p / "diff.txt"
+        if not out.exists(): return False
+        lines = sorted([x.strip() for x in out.read_text().splitlines() if x.strip()])
+        return lines == ["apple", "cherry", "fig"]
+    tasks.append(BashTaskSpec("set_difference_lines", "Find all lines in 'fileA.txt' that do NOT appear in 'fileB.txt' and save them sorted in 'diff.txt'.", setup_06, verify_06, ["text", "comm", "grep"]))
+
+    def setup_07(p: Path):
+        (p / "story.txt").write_text("The Quick BROWN fox JUMPS over the Lazy Dog.\n")
+    def verify_07(p: Path):
+        out = p / "lowercase.txt"
+        if not out.exists(): return False
+        return out.read_text().strip() == "the quick brown fox jumps over the lazy dog."
+    tasks.append(BashTaskSpec("convert_lowercase", "Convert all text in 'story.txt' to lowercase and save to 'lowercase.txt'.", setup_07, verify_07, ["text", "tr"]))
+
+    def setup_08(p: Path):
+        (p / "records.tsv").write_text("id\tname\tage\tsalary\n1\tAlice\t30\t75000\n2\tBob\t25\t50000\n3\tCharlie\t35\t120000\n4\tDavid\t40\t90000\n")
+    def verify_08(p: Path):
+        out = p / "avg_salary.txt"
+        if not out.exists(): return False
+        val = float(out.read_text().strip())
+        return abs(val - 83750.0) < 1.0
+    tasks.append(BashTaskSpec("calculate_avg_salary", "Calculate the average salary (column 4) in 'records.tsv' (ignoring header) and write the number to 'avg_salary.txt'.", setup_08, verify_08, ["pipeline", "awk"]))
+
+    def setup_09(p: Path):
+        (p / "source.c").write_text("// Copyright 2023\n#include <stdio.h>\n\n// Main function\nint main() {\n    // Print greeting\n    printf(\"Hello\\n\");\n    return 0;\n}\n")
+    def verify_09(p: Path):
+        out = p / "clean.c"
+        if not out.exists(): return False
+        c = out.read_text()
+        return "//" not in c and "printf" in c and "main" in c
+    tasks.append(BashTaskSpec("strip_single_line_comments", "Remove all single-line comments (starting with '//') from 'source.c' and save the result to 'clean.c'.", setup_09, verify_09, ["text", "sed"]))
+
+    def setup_10(p: Path):
+        (p / "ids.txt").write_text("105\n23\n4\n1050\n88\n9\n500\n")
+    def verify_10(p: Path):
+        out = p / "sorted_ids.txt"
+        if not out.exists(): return False
+        lines = [x.strip() for x in out.read_text().splitlines() if x.strip()]
+        return lines == ["4", "9", "23", "88", "105", "500", "1050"]
+    tasks.append(BashTaskSpec("numeric_sort", "Sort the numbers in 'ids.txt' in ascending numerical order and save to 'sorted_ids.txt'.", setup_10, verify_10, ["text", "sort"]))
+
+    # =========================================================================
+    # Domain 2: Deep Filesystem Restructuring & Tree Operations (Tasks 11–30)
+    # =========================================================================
+
+    def setup_11(p: Path):
+        for name in ["2023-01-15_report.pdf", "2023-01-20_invoice.pdf", "2023-02-05_summary.pdf", "2022-12-10_old.pdf"]:
+            (p / name).write_text("content")
+    def verify_11(p: Path):
+        return (p / "2023" / "01" / "2023-01-15_report.pdf").exists() and \
+               (p / "2023" / "01" / "2023-01-20_invoice.pdf").exists() and \
+               (p / "2023" / "02" / "2023-02-05_summary.pdf").exists() and \
+               (p / "2022" / "12" / "2022-12-10_old.pdf").exists()
+    tasks.append(BashTaskSpec("organize_by_date_dirs", "Move all files with format 'YYYY-MM-DD_name.pdf' into nested directories 'YYYY/MM/'.", setup_11, verify_11, ["fs", "mv", "mkdir"]))
+
+    def setup_12(p: Path):
+        (p / "a.txt").write_text("original content")
+        (p / "sub").mkdir()
+        (p / "sub" / "b.txt").write_text("original content")
+        (p / "c.txt").write_text("unique content")
+        (p / "d.txt").write_text("original content")
+    def verify_12(p: Path):
+        out = p / "duplicates.txt"
+        if not out.exists(): return False
+        content = out.read_text()
+        return "a.txt" in content and "b.txt" in content and "d.txt" in content and "c.txt" not in content
+    tasks.append(BashTaskSpec("find_duplicate_files_md5", "Find all duplicate files in the workspace matching the exact content of 'a.txt' and list their paths in 'duplicates.txt'.", setup_12, verify_12, ["fs", "md5sum"]))
+
+    def setup_13(p: Path):
+        (p / "dir1").mkdir()
+        (p / "dir1" / "file.txt").write_text("data")
+        (p / "dir2").mkdir()
+        (p / "dir3").mkdir()
+        (p / "dir3" / "sub_empty").mkdir()
+    def verify_13(p: Path):
+        return (p / "dir1").exists() and not (p / "dir2").exists() and not (p / "dir3" / "sub_empty").exists() and not (p / "dir3").exists()
+    tasks.append(BashTaskSpec("remove_empty_directories", "Recursively find and delete all empty directories in the workspace while preserving non-empty ones.", setup_13, verify_13, ["fs", "find", "rmdir"]))
+
+    def setup_14(p: Path):
+        (p / "docs").mkdir()
+        (p / "docs" / "manual.txt").write_text("manual")
+        (p / "target.txt").write_text("target")
+        os.symlink(str(p / "nonexistent.txt"), str(p / "broken_link.txt"))
+        os.symlink(str(p / "target.txt"), str(p / "valid_link.txt"))
+    def verify_14(p: Path):
+        out = p / "broken.txt"
+        if not out.exists(): return False
+        return "broken_link.txt" in out.read_text() and "valid_link.txt" not in out.read_text()
+    tasks.append(BashTaskSpec("find_broken_symlinks", "Find all broken symbolic links in the workspace and write their names to 'broken.txt'.", setup_14, verify_14, ["fs", "symlink"]))
+
+    def setup_15(p: Path):
+        (p / "project").mkdir()
+        (p / "project" / "file1.txt").write_text("1")
+        (p / "project" / "file2.txt").write_text("2")
+        (p / "backup").mkdir()
+    def verify_15(p: Path):
+        return (p / "backup" / "project" / "file1.txt").exists() and (p / "backup" / "project" / "file2.txt").exists()
+    tasks.append(BashTaskSpec("recursive_copy_dir", "Copy the entire directory 'project' into 'backup/' preserving directory structure.", setup_15, verify_15, ["fs", "cp"]))
+
+    # =========================================================================
+    # Domain 3: Complex Shell Pipelines & Data Aggregation (Tasks 31–50)
+    # =========================================================================
+
+    def setup_16(p: Path):
+        (p / "sales.csv").write_text("item,qty,price\nWidget,10,5.0\nGadget,2,20.0\nWidget,5,5.0\nGizmo,1,100.0\n")
+    def verify_16(p: Path):
+        out = p / "total_rev.txt"
+        if not out.exists(): return False
+        val = float(out.read_text().strip())
+        return abs(val - 215.0) < 1.0
+    tasks.append(BashTaskSpec("compute_total_revenue", "Calculate total revenue by multiplying qty * price for each line in 'sales.csv' (skip header), sum it, and save to 'total_rev.txt'.", setup_16, verify_16, ["pipeline", "awk"]))
+
+    def setup_17(p: Path):
+        (p / "app.log").write_text("2023-10-01 10:00:00 [USER:12] Login success\n2023-10-01 10:05:00 [USER:45] Login fail\n2023-10-01 10:10:00 [USER:12] Logout\n2023-10-01 10:15:00 [USER:78] Login success\n")
+    def verify_17(p: Path):
+        out = p / "users.txt"
+        if not out.exists(): return False
+        lines = sorted([x.strip() for x in out.read_text().splitlines() if x.strip()])
+        return lines == ["12", "45", "78"]
+    tasks.append(BashTaskSpec("extract_unique_user_ids", "Extract all unique user IDs from '[USER:<id>]' tags in 'app.log' sorted numerically into 'users.txt'.", setup_17, verify_17, ["pipeline", "grep", "sort"]))
+
+    def setup_18(p: Path):
+        (p / "data.json").write_text('{"name": "Alice", "score": 95}\n{"name": "Bob", "score": 82}\n{"name": "Charlie", "score": 98}\n')
+    def verify_18(p: Path):
+        out = p / "names.txt"
+        if not out.exists(): return False
+        lines = sorted([x.strip() for x in out.read_text().splitlines() if x.strip()])
+        return lines == ["Alice", "Bob", "Charlie"]
+    tasks.append(BashTaskSpec("extract_json_keys_regex", "Extract the 'name' field string values from each JSON line in 'data.json' and save sorted in 'names.txt'.", setup_18, verify_18, ["pipeline", "sed"]))
+
+    # =========================================================================
+    # Domain 4: Permissions, Security & Attributes (Tasks 51–70)
+    # =========================================================================
+
+    def setup_19(p: Path):
+        (p / "secure.sh").write_text("#!/bin/bash\necho secure\n")
+        os.chmod(p / "secure.sh", 0o777)
+    def verify_19(p: Path):
+        st = os.stat(p / "secure.sh")
+        return (st.st_mode & 0o777) == 0o750
+    tasks.append(BashTaskSpec("chmod_octal_permissions", "Change the permissions of 'secure.sh' to exactly rwxr-x--- (octal 750).", setup_19, verify_19, ["perm", "chmod"]))
+
+    def setup_20(p: Path):
+        (p / "bin").mkdir()
+        for i in range(5):
+            f = p / "bin" / f"tool_{i}.sh"
+            f.write_text("#!/bin/bash\necho ok\n")
+            os.chmod(f, 0o644)
+    def verify_20(p: Path):
+        for i in range(5):
+            st = os.stat(p / "bin" / f"tool_{i}.sh")
+            if not (st.st_mode & 0o111): return False
+        return True
+    tasks.append(BashTaskSpec("batch_chmod_scripts", "Make all '.sh' files in the 'bin/' directory executable.", setup_20, verify_20, ["perm", "chmod"]))
+
+    # =========================================================================
+    # Programmatic Generation for Remaining Tasks up to 100
+    # =========================================================================
+    base_count = len(tasks)
+    for i in range(100 - base_count):
+        idx = i + base_count
+        category = idx % 4
+
+        if category == 0:
+            # Word frequency & counting
+            word = f"metric_{idx}"
+            target_file = f"metrics_{idx}.log"
+            def make_setup(w=word, tf=target_file):
+                def _setup(p: Path):
+                    lines = [f"2023-11-0{j%9+1} INFO Status check {j}" for j in range(15)]
+                    lines.insert(2, f"2023-11-01 WARN {w} threshold exceeded")
+                    lines.insert(5, f"2023-11-02 ERROR {w} failure")
+                    lines.insert(9, f"2023-11-03 WARN {w} threshold exceeded")
+                    (p / tf).write_text("\n".join(lines) + "\n")
+                return _setup
+            def make_verify(w=word, tf=target_file, out_name=f"count_{idx}.txt"):
+                def _verify(p: Path):
+                    out = p / out_name
+                    if not out.exists(): return False
+                    return out.read_text().strip() == "3"
+                return _verify
+            tasks.append(BashTaskSpec(f"count_occurrences_task_{idx}", f"Count occurrences of '{word}' in '{target_file}' and save the total count to 'count_{idx}.txt'.", make_setup(), make_verify(), ["text", "grep"]))
+
+        elif category == 1:
+            # CSV filtering
+            target_csv = f"data_{idx}.csv"
+            def make_setup(tcsv=target_csv, index=idx):
+                def _setup(p: Path):
+                    (p / tcsv).write_text(f"id,name,value\n1,alpha,{index*2}\n2,beta,{index*5}\n3,alpha,{index*10}\n4,gamma,{index}\n")
+                return _setup
+            def make_verify(tcsv=target_csv, index=idx, out_name=f"alpha_sum_{idx}.txt"):
+                def _verify(p: Path):
+                    out = p / out_name
+                    if not out.exists(): return False
+                    val = float(out.read_text().strip())
+                    expected = float(index * 2 + index * 10)
+                    return abs(val - expected) < 1.0
+                return _verify
+            tasks.append(BashTaskSpec(f"csv_conditional_sum_{idx}", f"Sum the 'value' column in '{target_csv}' for rows where name == 'alpha' and write the sum to 'alpha_sum_{idx}.txt'.", make_setup(), make_verify(), ["pipeline", "awk"]))
+
+        elif category == 2:
+            # Filesystem reorganization
+            def make_setup(index=idx):
+                def _setup(p: Path):
+                    (p / f"raw_{index}").mkdir()
+                    for ext in ["txt", "log", "bak"]:
+                        (p / f"raw_{index}" / f"file_{index}.{ext}").write_text("data")
+                return _setup
+            def make_verify(index=idx):
+                def _verify(p: Path):
+                    return (p / f"backup_{index}" / f"file_{index}.bak").exists() and not (p / f"raw_{index}" / f"file_{index}.bak").exists()
+                return _verify
+            tasks.append(BashTaskSpec(f"move_extension_dir_{idx}", f"Move all '.bak' files from 'raw_{idx}/' into a new directory named 'backup_{idx}/'.", make_setup(), make_verify(), ["fs", "mv"]))
+
+        else:
+            # Tar archive creation
+            def make_setup(index=idx):
+                def _setup(p: Path):
+                    (p / f"bundle_{index}").mkdir()
+                    (p / f"bundle_{index}" / "data.csv").write_text("1,2,3")
+                return _setup
+            def make_verify(index=idx):
+                def _verify(p: Path):
+                    archive = p / f"bundle_{index}.tar.gz"
+                    return archive.exists() and archive.stat().st_size > 0
+                return _verify
+            tasks.append(BashTaskSpec(f"tar_compression_task_{idx}", f"Compress the directory 'bundle_{idx}' into a gzip archive named 'bundle_{idx}.tar.gz'.", make_setup(), make_verify(), ["archive", "tar"]))
 
     return tasks
 
@@ -235,9 +341,10 @@ class InterCodeBashBenchmark(BaseBenchmark):
         "Output ONLY the exact Bash command to execute."
     )
 
-    def __init__(self, seed: int = 42):
+    def __init__(self, num_tasks: int = 100, seed: int = 42):
         self.seed = seed
-        self.task_specs = create_task_suite()
+        self.num_tasks = num_tasks
+        self.task_specs = create_task_suite()[:num_tasks]
         self.task_list = self._generate_tasks()
 
         self.current_workspace_dir: Optional[tempfile.TemporaryDirectory] = None

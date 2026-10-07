@@ -28,14 +28,14 @@ def parse_args():
     parser.add_argument(
         "--num_tasks",
         type=int,
-        default=50,
-        help="Number of InterCode-Bash tasks to run (default: 50 tasks)",
+        default=100,
+        help="Number of InterCode-Bash tasks to run (default: 100 tasks)",
     )
     parser.add_argument(
         "--n_rollouts",
         type=int,
         default=5,
-        help="Number of rollouts per task (default: 5 rollouts -> 250 episodes)",
+        help="Number of rollouts per task (default: 5 rollouts -> 500 episodes)",
     )
     parser.add_argument(
         "--max_steps",
@@ -95,7 +95,7 @@ def main():
 
     # 2. Initialize InterCode-Bash Benchmark
     print("\n[2/3] Initializing InterCode-Bash sandbox suite...")
-    benchmark = InterCodeBashBenchmark()
+    benchmark = InterCodeBashBenchmark(num_tasks=args.num_tasks)
     print(f"  -> Initialized {len(benchmark.list_tasks())} total bash benchmark tasks.")
 
     # 3. Execute Runner
