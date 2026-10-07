@@ -2,12 +2,17 @@
 set -e
 
 echo "=== [MiniWoB++] Installing Headless Browser Dependencies on RunPod ==="
-apt-get update && apt-get install -y \
-    chromium-browser \
-    chromium-chromedriver \
-    xvfb \
-    git \
-    git-lfs
+if command -v apt-get &> /dev/null; then
+    apt-get update && apt-get install -y \
+        chromium-browser || apt-get install -y chromium || true
+    apt-get install -y \
+        chromium-chromedriver || apt-get install -y chromedriver || true
+    apt-get install -y \
+        xvfb \
+        git \
+        git-lfs \
+        tmux
+fi
 
 echo "=== Installing Core Sandbox Requirements ==="
 pip install --upgrade pip
@@ -20,5 +25,5 @@ pip install \
     selenium>=4.15.0
 
 echo "=== MiniWoB++ Setup Complete! ==="
-echo "To run MiniWoB++ 7B data collection:"
-echo "  xvfb-run -a python scripts/collect_miniwob.py --model Qwen/Qwen2.5-Coder-7B-Instruct --num_episodes 50"
+echo "To run MiniWoB++ Qwen2.5-Coder-7B data collection:"
+echo "  xvfb-run -a python scripts/collect_miniwob.py --model Qwen/Qwen2.5-Coder-7B-Instruct --num_tasks 50 --n_rollouts 5 --max_steps 8 --temperature 0.7 --layers 20 --anchors post_gen pre_gen --output_dir artifacts/miniwob/qwen2.5-7b/qwen2.5-7b"

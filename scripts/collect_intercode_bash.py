@@ -35,7 +35,7 @@ def parse_args():
         "--n_rollouts",
         type=int,
         default=5,
-        help="Number of rollouts per task (default: 5)",
+        help="Number of rollouts per task (default: 5 rollouts -> 250 episodes)",
     )
     parser.add_argument(
         "--max_steps",
@@ -108,13 +108,15 @@ def main():
         extractor=extractor,
         benchmark=benchmark,
         output_dir=output_path,
-        n_rollouts=args.n_rollouts,
-        temperature=args.temperature,
+        layer_ids=args.layers,
+        anchors=args.anchors,
     )
 
     summary = runner.run_benchmark(
         max_tasks=args.num_tasks,
         max_steps=args.max_steps,
+        n_rollouts=args.n_rollouts,
+        temperature=args.temperature,
     )
 
     total_episodes = len(summary)

@@ -1,7 +1,8 @@
 """
-MiniWoB++ Benchmark Data Collection Script.
-Runs open-weight LLMs on MiniWoB++ web environments, extracts residual-stream activations,
-and persists trajectories to Parquet and Safetensors.
+MiniWoB++ Benchmark Data Collection Script:
+Runs open-weight LLMs (e.g. Qwen2.5-Coder-7B-Instruct) on MiniWoB++ web environments,
+extracts dual-anchor residual-stream activations, and persists
+sharded features ('feat.shard*.npz' and 'meta.shard*.jsonl') for probing.
 """
 
 import argparse
@@ -17,123 +18,130 @@ from src.runner import Runner
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="MiniWoB++ Agent Data Collection")
+    parser = argparse.ArgumentParser(description="MiniWoB++ Activation Harvesting")
     parser.add_argument(
         "--model",
         type=str,
         default="Qwen/Qwen2.5-Coder-7B-Instruct",
-        help="Hugging Face model ID (e.g. Qwen/Qwen2.5-Coder-7B-Instruct, meta-llama/Llama-3.1-8B-Instruct)",
+        help="Hugging Face model ID (default: Qwen/Qwen2.5-Coder-7B-Instruct)",
     )
     parser.add_argument(
         "--all_envs",
         action="store_true",
-        help="Run across ALL 128 registered MiniWoB++ environments",
+        help="Run across all 128 registered MiniWoB++ environments",
     )
     parser.add_argument(
         "--dom_only",
         action="store_true",
-        help="Run across curated ~45 text/DOM environments (excluding canvas/pixel drag tasks)",
+        default=True,
+        help="Run across curated text/DOM environments (default: True)",
     )
     parser.add_argument(
-        "--envs",
-        type=str,
-        nargs="+",
-        default=[
-            "miniwob/click-test-2-v1",
-            "miniwob/login-user-v1",
-            "miniwob/enter-text-v1",
-            "miniwob/choose-date-v1",
-            "miniwob/click-dialog-v1",
-        ],
-        help="MiniWoB environment names, 'all', or 'dom_only'",
-    )
-    parser.add_argument(
-        "--episodes_per_env",
+        "--num_tasks",
         type=int,
-        default=1,
-        help="Number of episodes to run per environment",
+        default=50,
+        help="Number of MiniWoB tasks to run (default: 50 tasks)",
     )
     parser.add_argument(
-        "--num_episodes",
+        "--n_rollouts",
         type=int,
-        default=None,
-        help="Total episode limit across all environments (optional)",
+        default=5,
+        help="Number of rollouts per task (default: 5 rollouts -> 250 episodes)",
     )
     parser.add_argument(
         "--max_steps",
         type=int,
-        default=10,
-        help="Maximum interaction steps per episode before terminating",
-    )
-    parser.add_argument(
-        "--output_dir",
-        type=str,
-        default="data/runs/miniwob_qwen7b",
-        help="Directory to persist safetensors and parquet summaries",
+        default=8,
+        help="Maximum interaction turns per episode before terminating (default: 8)",
     )
     parser.add_argument(
         "--temperature",
         type=float,
-        default=0.0,
-        help="Generation temperature (0.0 = greedy)",
+        default=0.7,
+        help="Generation temperature (default: 0.7 for diverse stochastic rollouts)",
+    )
+    parser.add_argument(
+        "--layers",
+        type=int,
+        nargs="+",
+        default=[20],
+        help="Transformer layer indices to extract (default: 20)",
+    )
+    parser.add_argument(
+        "--anchors",
+        type=str,
+        nargs="+",
+        default=["post_gen", "pre_gen"],
+        help="Anchor tokens to extract (default: post_gen pre_gen)",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="artifacts/miniwob/qwen2.5-7b/qwen2.5-7b",
+        help="Directory to persist features and summaries",
     )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+    output_path = Path(args.output_dir)
 
-    # Determine environment list
-    if args.all_envs or args.envs == ["all"] or args.envs == "all":
-        env_selection = "all"
-        display_envs = f"ALL 128 MiniWoB++ environments (episodes_per_env={args.episodes_per_env})"
-    elif args.dom_only or args.envs == ["dom_only"] or args.envs == "dom_only":
-        env_selection = "dom_only"
-        display_envs = f"Curated ~45 DOM-only environments (episodes_per_env={args.episodes_per_env})"
-    else:
-        env_selection = args.envs
-        display_envs = str(args.envs)
+    print("=" * 65)
+    print("MiniWoB++ Activation Collection & Feature Extraction")
+    print("=" * 65)
+    print(f"Model:              {args.model}")
+    print(f"Tasks:              {args.num_tasks} (Rollouts per task: {args.n_rollouts})")
+    print(f"Total Episodes:     {args.num_tasks * args.n_rollouts}")
+    print(f"Max Turns / Ep:     {args.max_steps}")
+    print(f"Temperature:        {args.temperature}")
+    print(f"Target Layers:      {args.layers}")
+    print(f"Anchor Positions:   {args.anchors}")
+    print(f"Output Directory:   {output_path.resolve()}")
+    print("=" * 65)
 
-    print("=" * 60)
-    print("MiniWoB++ Activation Collection")
-    print("=" * 60)
-    print(f"Model:            {args.model}")
-    print(f"Environments:     {display_envs}")
-    print(f"Episodes/Env:     {args.episodes_per_env}")
-    print(f"Max Steps/Ep:     {args.max_steps}")
-    print(f"Output Directory: {args.output_dir}")
-    print("=" * 60)
-
-    # 1. Initialize Activation Extractor (Loads Model to GPU)
-    print("\n[1/3] Loading model engine...")
-    extractor = ActivationExtractor(model=args.model)
+    # 1. Initialize Activation Extractor
+    print("\n[1/3] Loading model engine & registering residual hooks...")
+    extractor = ActivationExtractor(
+        model=args.model,
+        layer_ids=args.layers,
+        anchors=args.anchors,
+    )
 
     # 2. Initialize MiniWoB Benchmark
-    print("\n[2/3] Initializing MiniWoB environments...")
+    print("\n[2/3] Initializing MiniWoB++ headless browser environments...")
     benchmark = MiniWoBBenchmark(
-        env_names=env_selection if isinstance(env_selection, list) else None,
+        all_envs=args.all_envs,
+        dom_only=args.dom_only,
     )
-    total_tasks = len(benchmark.list_tasks())
-    print(f"  -> Generated {total_tasks} total benchmark tasks.")
+    print(f"  -> Initialized {len(benchmark.list_tasks())} total MiniWoB++ benchmark tasks.")
 
     # 3. Execute Runner
     print("\n[3/3] Starting episode rollouts and activation harvesting...")
-    output_path = Path(args.output_dir)
     runner = Runner(
         extractor=extractor,
         benchmark=benchmark,
         output_dir=output_path,
+        layer_ids=args.layers,
+        anchors=args.anchors,
     )
 
-    results = runner.run_benchmark(
-        max_tasks=args.num_episodes,
+    summary = runner.run_benchmark(
+        max_tasks=args.num_tasks,
         max_steps=args.max_steps,
-        n_rollouts=args.episodes_per_env,
+        n_rollouts=args.n_rollouts,
         temperature=args.temperature,
     )
 
-    print("\n" + "=" * 60)
-    print(f"Collection Complete! Saved to: {output_path.resolve()}")
+    total_episodes = len(summary)
+    successes = summary["is_success"].sum()
+    rate = (successes / total_episodes) * 100 if total_episodes > 0 else 0.0
+
+    print("\n" + "=" * 65)
+    print(f"Benchmark Complete! Success Rate: {rate:.1f}% ({successes}/{total_episodes})")
+    print(f"Saved feature shards to {output_path / 'features'}")
+    print(f"Saved run summary to {output_path / 'run_summary.parquet'}")
+    print("=" * 65)
 
 
 if __name__ == "__main__":
