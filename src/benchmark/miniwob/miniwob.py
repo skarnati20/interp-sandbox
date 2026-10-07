@@ -5,6 +5,7 @@ import re
 from typing import Any, Optional
 
 import gymnasium
+import numpy as np
 
 try:
     from miniwob.action import ActionTypes
@@ -55,21 +56,49 @@ class MiniWoBDomFormatter:
 class MiniWoBActionParser:
     """Parses textual agent actions into MiniWoB environment action dictionaries."""
 
-    @staticmethod
-    def parse(action_str: str) -> dict[str, Any]:
+    ALLOWED_KEYS = (
+        "<Enter>", "<PageUp>", "<PageDown>", "<Backspace>", "<Delete>", "<Tab>", "<Space>",
+        "<ArrowUp>", "<ArrowRight>", "<ArrowDown>", "<ArrowLeft>", "[", "]", "-", "=", ";",
+        '"', "\\", ",", ".", "/", "`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
+        "<Numpad0>", "<Numpad1>", "<Numpad2>", "<Numpad3>", "<Numpad4>", "<Numpad5>",
+        "<Numpad6>", "<Numpad7>", "<Numpad8>", "<Numpad9>", "<NumpadAdd>", "<NumpadMultiply>",
+        "<NumpadSubtract>", "<NumpadDivide>", "<NumpadDecimal>", "<NumpadEnter>",
+        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p",
+        "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "C-a", "C-c", "C-x", "C-v",
+        "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P",
+        "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"
+    )
+
+    KEY_TO_INDEX: dict[str, int] = {}
+    for idx, key_str in enumerate(ALLOWED_KEYS):
+        KEY_TO_INDEX[key_str] = idx
+        KEY_TO_INDEX[key_str.strip("<>").lower()] = idx
+        KEY_TO_INDEX[key_str.lower()] = idx
+
+    @classmethod
+    def parse(cls, action_str: str) -> dict[str, Any]:
         action_str = action_str.strip()
 
+        # Schema defaults required by MiniWoB
+        res = {
+            "action_type": 0,  # NONE
+            "ref": 0,
+            "text": "",
+            "key": 0,
+            "coords": np.zeros(2, dtype=np.float32),
+            "field": 0,
+        }
+
         if ActionTypes is None:
-            return {}
+            return res
 
         # 1. CLICK(ref=4) or CLICK(4)
         click_match = re.search(r"CLICK\((?:ref=)?(\d+)\)", action_str, re.IGNORECASE)
         if click_match:
             ref = int(click_match.group(1))
-            return {
-                "action_type": ACTION_TYPE_INDEX.get(ActionTypes.CLICK_ELEMENT, 8),
-                "ref": ref,
-            }
+            res["action_type"] = ACTION_TYPE_INDEX.get(ActionTypes.CLICK_ELEMENT, 8)
+            res["ref"] = ref
+            return res
 
         # 2. TYPE(ref=2, text="hello") or TYPE(2, "hello")
         type_match = re.search(
@@ -80,50 +109,50 @@ class MiniWoBActionParser:
         if type_match:
             ref = int(type_match.group(1))
             text = type_match.group(2)
-            return {
-                "action_type": ACTION_TYPE_INDEX.get(ActionTypes.TYPE_TEXT, 10),
-                "ref": ref,
-                "text": text,
-            }
+            res["action_type"] = ACTION_TYPE_INDEX.get(ActionTypes.TYPE_TEXT, 10)
+            res["ref"] = ref
+            res["text"] = text
+            return res
 
         # 3. PRESS(key="Enter") or PRESS("Enter")
-        press_match = re.search(r"PRESS\((?:key=)?[\"'](.*?)[\"']\)", action_str, re.IGNORECASE)
+        press_match = re.search(
+            r"PRESS\((?:key=)?[\"'](.*?)[\"']\)", action_str, re.IGNORECASE
+        )
         if press_match:
-            key = press_match.group(1)
-            return {"action_type": ACTION_TYPE_INDEX.get(ActionTypes.PRESS_KEY, 9), "key": key}
+            key_name = press_match.group(1)
+            key_idx = cls.KEY_TO_INDEX.get(key_name.strip("<>").lower(), 0)
+            res["action_type"] = ACTION_TYPE_INDEX.get(ActionTypes.PRESS_KEY, 9)
+            res["key"] = key_idx
+            return res
 
         # 4. SCROLL(dx=0, dy=100) or SCROLL_DOWN / SCROLL_UP
         scroll_match = re.search(
             r"SCROLL\((?:dx=)?(-?\d+),\s*(?:dy=)?(-?\d+)\)", action_str, re.IGNORECASE
         )
         if scroll_match:
-            dx = int(scroll_match.group(1))
-            dy = int(scroll_match.group(2))
-            return {
-                "action_type": ACTION_TYPE_INDEX.get(ActionTypes.MOVE_COORDS, 1),
-                "coords": (dx, dy),
-            }
+            dx = float(scroll_match.group(1))
+            dy = float(scroll_match.group(2))
+            res["action_type"] = ACTION_TYPE_INDEX.get(ActionTypes.MOVE_COORDS, 1)
+            res["coords"] = np.array([dx, dy], dtype=np.float32)
+            return res
 
         if re.search(r"SCROLL_DOWN", action_str, re.IGNORECASE):
-            return {
-                "action_type": ACTION_TYPE_INDEX.get(ActionTypes.SCROLL_DOWN_COORDS, 7),
-                "coords": (0, 100),
-            }
+            res["action_type"] = ACTION_TYPE_INDEX.get(ActionTypes.SCROLL_DOWN_COORDS, 7)
+            res["coords"] = np.array([0.0, 100.0], dtype=np.float32)
+            return res
+
         if re.search(r"SCROLL_UP", action_str, re.IGNORECASE):
-            return {
-                "action_type": ACTION_TYPE_INDEX.get(ActionTypes.SCROLL_UP_COORDS, 6),
-                "coords": (0, -100),
-            }
+            res["action_type"] = ACTION_TYPE_INDEX.get(ActionTypes.SCROLL_UP_COORDS, 6)
+            res["coords"] = np.array([0.0, -100.0], dtype=np.float32)
+            return res
 
-        # 5. Fallback heuristic: single integer -> CLICK(ref=X)
+        # 5. Fallback integer: single integer -> CLICK(ref=X)
         if action_str.isdigit():
-            return {
-                "action_type": ACTION_TYPE_INDEX.get(ActionTypes.CLICK_ELEMENT, 8),
-                "ref": int(action_str),
-            }
+            res["action_type"] = ACTION_TYPE_INDEX.get(ActionTypes.CLICK_ELEMENT, 8)
+            res["ref"] = int(action_str)
+            return res
 
-        # Default fallback to NO_OP
-        return {"action_type": ACTION_TYPE_INDEX.get(ActionTypes.NONE, 0)}
+        return res
 
 
 class MiniWoBBenchmark(BaseBenchmark):
