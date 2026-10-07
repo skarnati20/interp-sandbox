@@ -165,8 +165,15 @@ def main():
         temperature=args.temperature,
     )
 
+    total_episodes = len(results)
+    successes = sum(1 for r in results if r["is_success"])
+    rate = (successes / total_episodes) * 100 if total_episodes > 0 else 0.0
+
     print("\n" + "=" * 60)
-    print(f"Collection Complete! Saved to: {output_path.resolve()}")
+    print(f"Benchmark Complete! Success Rate: {rate:.1f}% ({successes}/{total_episodes})")
+    print(f"Saved feature shards to {output_path / 'features'}")
+    print(f"Saved run summary to {output_path / 'run_summary.parquet'}")
+    print("=" * 60)
 
 
 if __name__ == "__main__":

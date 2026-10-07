@@ -109,6 +109,7 @@ def main():
     benchmark = MiniWoBBenchmark(
         all_envs=args.all_envs,
         dom_only=args.dom_only,
+        num_tasks=args.num_tasks,
     )
     print(f"  -> Initialized {len(benchmark.list_tasks())} total MiniWoB++ benchmark tasks.")
 
@@ -122,15 +123,15 @@ def main():
         anchors=args.anchors,
     )
 
-    summary = runner.run_benchmark(
+    results = runner.run_benchmark(
         max_tasks=args.num_tasks,
         max_steps=args.max_steps,
         n_rollouts=args.n_rollouts,
         temperature=args.temperature,
     )
 
-    total_episodes = len(summary)
-    successes = summary["is_success"].sum()
+    total_episodes = len(results)
+    successes = sum(1 for r in results if r["is_success"])
     rate = (successes / total_episodes) * 100 if total_episodes > 0 else 0.0
 
     print("\n" + "=" * 65)
