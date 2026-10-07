@@ -90,12 +90,8 @@ def main():
     print("=" * 65)
 
     # 1. Initialize Activation Engine
-    print("\n[1/3] Loading model engine & registering residual hooks...")
-    extractor = ActivationExtractor(
-        model=args.model,
-        layer_ids=args.layers,
-        anchors=args.anchors,
-    )
+    print("\n[1/3] Loading model engine...")
+    extractor = ActivationExtractor(model=args.model)
 
     # 2. Initialize InterCode-Bash Benchmark
     print("\n[2/3] Initializing InterCode-Bash sandbox suite...")
