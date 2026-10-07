@@ -1,80 +1,77 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
 import re
-from typing import Any, Optional, Union
+from typing import Any, Optional
+
 import gymnasium
 
-import miniwob
-from miniwob.action import ActionTypes
-
-gymnasium.register_envs(miniwob)
+try:
+    from miniwob.action import ActionTypes
+    ACTION_TYPE_INDEX = {at: i for i, at in enumerate(ActionTypes)}
+except ImportError:
+    try:
+        from miniwob.constants import ACTION_TYPE_INDEX, ActionTypes
+    except ImportError:
+        ACTION_TYPE_INDEX = {}
+        ActionTypes = None
 
 from ..base import BaseBenchmark, StepObservation, TaskInstance
 
-# Map ActionTypes enum to Discrete integer indices expected by MiniWoB action space
-ACTION_TYPE_INDEX = {
-    ActionTypes.NONE: 0,
-    ActionTypes.MOVE_COORDS: 1,
-    ActionTypes.CLICK_COORDS: 2,
-    ActionTypes.DBLCLICK_COORDS: 3,
-    ActionTypes.MOUSEDOWN_COORDS: 4,
-    ActionTypes.MOUSEUP_COORDS: 5,
-    ActionTypes.SCROLL_UP_COORDS: 6,
-    ActionTypes.SCROLL_DOWN_COORDS: 7,
-    ActionTypes.CLICK_ELEMENT: 8,
-    ActionTypes.PRESS_KEY: 9,
-    ActionTypes.TYPE_TEXT: 10,
-    ActionTypes.TYPE_FIELD: 11,
-    ActionTypes.FOCUS_ELEMENT_AND_TYPE_TEXT: 12,
-    ActionTypes.FOCUS_ELEMENT_AND_TYPE_FIELD: 13,
-}
 
-
+@dataclass
 class MiniWoBDomFormatter:
-    """Formats raw MiniWoB DOM element tuples into clean text for LLM prompts."""
+    """Formats raw MiniWoB DOM element tuples into a structured text hierarchy."""
 
-    @staticmethod
-    def format_dom(dom_elements: tuple[dict[str, Any], ...]) -> str:
+    max_elements: int = 60
+
+    def format_dom(self, dom_elements: tuple[dict, ...]) -> str:
         if not dom_elements:
             return "(No visible DOM elements)"
 
         lines = []
-        for elem in dom_elements:
-            if not elem.get("visible", True):
-                continue
-
-            ref = elem.get("ref", "")
-            tag = elem.get("tag", "div")
-            text = elem.get("text", "").strip()
-            value = elem.get("value", "")
-            classes = elem.get("classes", "")
+        for i, el in enumerate(dom_elements[: self.max_elements]):
+            tag = el.get("tag", "div").lower()
+            ref = el.get("ref", i)
+            text = el.get("text", "").strip()
+            value = el.get("value", "").strip()
 
             attrs = []
             if text:
                 attrs.append(f'text="{text}"')
             if value:
                 attrs.append(f'value="{value}"')
-            if classes:
-                attrs.append(f'class="{classes}"')
+            if el.get("id"):
+                attrs.append(f'id="{el["id"]}"')
+            if el.get("classes"):
+                attrs.append(f'class="{el["classes"]}"')
 
-            attr_str = f" ({', '.join(attrs)})" if attrs else ""
-            lines.append(f"[{ref}] <{tag}>{attr_str}</{tag}>")
+            attr_str = " " + " ".join(attrs) if attrs else ""
+            lines.append(f"[{ref}] <{tag}{attr_str}>")
 
-        return "\n".join(lines) if lines else "(No visible interactive elements)"
+        return "\n".join(lines)
 
 
 class MiniWoBActionParser:
-    """Parses LLM text actions into official MiniWoB gym action dicts."""
+    """Parses textual agent actions into MiniWoB environment action dictionaries."""
 
     @staticmethod
     def parse(action_str: str) -> dict[str, Any]:
         action_str = action_str.strip()
 
-        # 1. CLICK(ref=X) or CLICK(X)
+        if ActionTypes is None:
+            return {}
+
+        # 1. CLICK(ref=4) or CLICK(4)
         click_match = re.search(r"CLICK\((?:ref=)?(\d+)\)", action_str, re.IGNORECASE)
         if click_match:
             ref = int(click_match.group(1))
-            return {"action_type": ACTION_TYPE_INDEX[ActionTypes.CLICK_ELEMENT], "ref": ref}
+            return {
+                "action_type": ACTION_TYPE_INDEX.get(ActionTypes.CLICK_ELEMENT, 8),
+                "ref": ref,
+            }
 
-        # 2. TYPE(ref=X, text="Y") or TYPE(X, "Y")
+        # 2. TYPE(ref=2, text="hello") or TYPE(2, "hello")
         type_match = re.search(
             r"TYPE\((?:ref=)?(\d+),\s*(?:text=)?[\"'](.*?)[\"']\)",
             action_str,
@@ -84,7 +81,7 @@ class MiniWoBActionParser:
             ref = int(type_match.group(1))
             text = type_match.group(2)
             return {
-                "action_type": ACTION_TYPE_INDEX[ActionTypes.TYPE_TEXT],
+                "action_type": ACTION_TYPE_INDEX.get(ActionTypes.TYPE_TEXT, 10),
                 "ref": ref,
                 "text": text,
             }
@@ -93,7 +90,7 @@ class MiniWoBActionParser:
         press_match = re.search(r"PRESS\((?:key=)?[\"'](.*?)[\"']\)", action_str, re.IGNORECASE)
         if press_match:
             key = press_match.group(1)
-            return {"action_type": ACTION_TYPE_INDEX[ActionTypes.PRESS_KEY], "key": key}
+            return {"action_type": ACTION_TYPE_INDEX.get(ActionTypes.PRESS_KEY, 9), "key": key}
 
         # 4. SCROLL(dx=0, dy=100) or SCROLL_DOWN / SCROLL_UP
         scroll_match = re.search(
@@ -103,30 +100,30 @@ class MiniWoBActionParser:
             dx = int(scroll_match.group(1))
             dy = int(scroll_match.group(2))
             return {
-                "action_type": ACTION_TYPE_INDEX[ActionTypes.MOVE_COORDS],
+                "action_type": ACTION_TYPE_INDEX.get(ActionTypes.MOVE_COORDS, 1),
                 "coords": (dx, dy),
             }
 
         if re.search(r"SCROLL_DOWN", action_str, re.IGNORECASE):
             return {
-                "action_type": ACTION_TYPE_INDEX[ActionTypes.SCROLL_DOWN_COORDS],
+                "action_type": ACTION_TYPE_INDEX.get(ActionTypes.SCROLL_DOWN_COORDS, 7),
                 "coords": (0, 100),
             }
         if re.search(r"SCROLL_UP", action_str, re.IGNORECASE):
             return {
-                "action_type": ACTION_TYPE_INDEX[ActionTypes.SCROLL_UP_COORDS],
+                "action_type": ACTION_TYPE_INDEX.get(ActionTypes.SCROLL_UP_COORDS, 6),
                 "coords": (0, -100),
             }
 
         # 5. Fallback heuristic: single integer -> CLICK(ref=X)
         if action_str.isdigit():
             return {
-                "action_type": ACTION_TYPE_INDEX[ActionTypes.CLICK_ELEMENT],
+                "action_type": ACTION_TYPE_INDEX.get(ActionTypes.CLICK_ELEMENT, 8),
                 "ref": int(action_str),
             }
 
         # Default fallback to NO_OP
-        return {"action_type": ACTION_TYPE_INDEX[ActionTypes.NONE]}
+        return {"action_type": ACTION_TYPE_INDEX.get(ActionTypes.NONE, 0)}
 
 
 class MiniWoBBenchmark(BaseBenchmark):
@@ -177,10 +174,21 @@ class MiniWoBBenchmark(BaseBenchmark):
     def __init__(
         self,
         env_names: Optional[list[str]] = None,
+        all_envs: bool = False,
+        dom_only: bool = True,
+        num_tasks: Optional[int] = None,
         seeds: Optional[list[int]] = None,
         headless: bool = True,
     ):
-        self.env_names = env_names or self.CORE_ENVS
+        if env_names is not None:
+            self.env_names = env_names
+        elif all_envs:
+            all_registered = [env_id for env_id in gymnasium.envs.registry.keys() if "miniwob/" in env_id]
+            self.env_names = sorted(all_registered) if all_registered else self.CORE_ENVS
+        else:
+            self.env_names = self.CORE_ENVS
+
+        self.num_tasks = num_tasks
         self.seeds = seeds or [42]
         self.headless = headless
         self.formatter = MiniWoBDomFormatter()
@@ -192,17 +200,23 @@ class MiniWoBBenchmark(BaseBenchmark):
 
     def list_tasks(self, split: str = "train") -> list[TaskInstance]:
         tasks = []
-        for i, env_name in enumerate(self.env_names):
-            for seed in self.seeds:
+        task_idx = 0
+        for seed in self.seeds:
+            for env_name in self.env_names:
+                if self.num_tasks is not None and len(tasks) >= self.num_tasks:
+                    break
                 task_id = f"{env_name}_seed_{seed}"
                 tasks.append(
                     TaskInstance(
                         task_id=task_id,
                         instruction=f"Complete the task in {env_name}",
                         system_prompt=self.DEFAULT_SYSTEM_PROMPT,
-                        info={"env_name": env_name, "seed": seed, "task_idx": i},
+                        info={"env_name": env_name, "seed": seed, "task_idx": task_idx},
                     )
                 )
+                task_idx += 1
+            if self.num_tasks is not None and len(tasks) >= self.num_tasks:
+                break
         return tasks
 
     def reset(self, task: TaskInstance, seed: Optional[int] = None) -> StepObservation:
@@ -249,13 +263,14 @@ class MiniWoBBenchmark(BaseBenchmark):
             observation_text=prompt_obs,
             step_reward=float(reward),
             is_done=is_done,
-            info={"utterance": utterance, "raw_obs": obs, "miniwob_info": info},
+            info={"reward": reward, "terminated": terminated, "truncated": truncated, "info": info},
         )
 
     def evaluate(self, task: TaskInstance) -> bool:
         if self._last_raw_obs is None:
             return False
-        return True
+        last_reward = self._last_raw_obs.get("reward", 0.0) if isinstance(self._last_raw_obs, dict) else 0.0
+        return last_reward > 0.0
 
     def close(self) -> None:
         if self._active_env is not None:
@@ -264,3 +279,5 @@ class MiniWoBBenchmark(BaseBenchmark):
             except Exception:
                 pass
             self._active_env = None
+        self._active_task = None
+        self._last_raw_obs = None
