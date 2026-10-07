@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
+import time
 from typing import Any, Optional
 
 import gymnasium
@@ -207,6 +208,7 @@ class MiniWoBBenchmark(BaseBenchmark):
         dom_only: bool = True,
         num_tasks: Optional[int] = None,
         seeds: Optional[list[int]] = None,
+        action_delay: float = 0.1,
         headless: bool = True,
     ):
         if env_names is not None:
@@ -219,6 +221,7 @@ class MiniWoBBenchmark(BaseBenchmark):
 
         self.num_tasks = num_tasks
         self.seeds = seeds or [42]
+        self.action_delay = action_delay
         self.headless = headless
         self.formatter = MiniWoBDomFormatter()
         self.parser = MiniWoBActionParser()
@@ -262,6 +265,10 @@ class MiniWoBBenchmark(BaseBenchmark):
         self._active_task = task
         self._last_reward = 0.0
 
+        # Allow initial DOM rendering to settle
+        if self.action_delay > 0:
+            time.sleep(self.action_delay)
+
         utterance = obs.get("utterance", task.instruction)
         dom_elements = obs.get("dom_elements", ())
         formatted_dom = self.formatter.format_dom(dom_elements)
@@ -283,6 +290,11 @@ class MiniWoBBenchmark(BaseBenchmark):
 
         try:
             obs, reward, terminated, truncated, info = self._active_env.step(parsed_action)
+
+            # Allow DOM mutations, animations, and dropdown popups to settle
+            if self.action_delay > 0:
+                time.sleep(self.action_delay)
+
             self._last_raw_obs = obs
             self._last_reward = float(reward)
 
