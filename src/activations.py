@@ -34,7 +34,6 @@ class ExtractionResult:
             "mean_prompt",   # Mean-pooled state across all prompt tokens
             "mean_all",      # Mean-pooled state across prompt + completion
             "thought_end",   # Boundary token where thinking ends and action begins
-            "action_start",  # First token of the physical action command
         ]
 
     def resolve_anchor(self, anchor: str) -> torch.Tensor:
@@ -43,54 +42,39 @@ class ExtractionResult:
         """
         norm_anchor = anchor.strip().lower()
 
-        # 1. Pre-generation decision anchor (last token of prompt)
-        if norm_anchor in ("pre_gen", "last_prompt", "decision"):
-            idx = max(0, self.prompt_tokens - 1)
-            return self.hidden_states[:, idx, :]
+        match norm_anchor:
+            case "pre_gen":
+                return self.hidden_states[:, max(0, self.prompt_tokens - 1), :]
 
-        # 2. Post-generation commitment anchor (last token of completion)
-        if norm_anchor in ("post_gen", "last_gen", "last_token"):
-            return self.hidden_states[:, -1, :]
+            case "post_gen":
+                return self.hidden_states[:, -1, :]
 
-        # 3. First generated token anchor
-        if norm_anchor in ("first_gen", "first_token"):
-            if self.completion_tokens > 0:
-                idx = min(self.prompt_tokens, self.hidden_states.shape[1] - 1)
-                return self.hidden_states[:, idx, :]
-            return self.hidden_states[:, max(0, self.prompt_tokens - 1), :]
+            case "first_gen":
+                idx = self.prompt_tokens if self.completion_tokens > 0 else max(0, self.prompt_tokens - 1)
+                return self.hidden_states[:, min(idx, self.hidden_states.shape[1] - 1), :]
 
-        # 4. Mean-pooled generated tokens
-        if norm_anchor in ("mean_gen", "avg_gen", "pool_gen"):
-            if self.completion_tokens > 0:
-                gen_slice = self.hidden_states[:, self.prompt_tokens :, :]
-                return gen_slice.mean(dim=1)
-            return self.hidden_states[:, max(0, self.prompt_tokens - 1), :]
+            case "mean_gen":
+                if self.completion_tokens > 0:
+                    return self.hidden_states[:, self.prompt_tokens :, :].mean(dim=1)
+                return self.hidden_states[:, max(0, self.prompt_tokens - 1), :]
 
-        # 5. Mean-pooled prompt tokens
-        if norm_anchor in ("mean_prompt", "avg_prompt", "pool_prompt"):
-            prompt_slice = self.hidden_states[:, : self.prompt_tokens, :]
-            return prompt_slice.mean(dim=1)
+            case "mean_prompt":
+                return self.hidden_states[:, : self.prompt_tokens, :].mean(dim=1)
 
-        # 6. Mean-pooled entire sequence (prompt + completion)
-        if norm_anchor in ("mean_all", "avg_all", "pool_all"):
-            return self.hidden_states.mean(dim=1)
+            case "mean_all":
+                return self.hidden_states.mean(dim=1)
 
-        # 7. Thought boundary / Action start anchors (for ReAct / think: traces)
-        if norm_anchor in ("thought_end", "pre_action", "action_start"):
-            return self.resolve_thought_boundary(norm_anchor)
+            case "thought_end":
+                return self.resolve_thought_boundary(norm_anchor)
 
-        # 8. Relative / Absolute integer offset (e.g. "-2", "+1", "0")
-        if re.match(r"^[+-]?\d+$", norm_anchor):
-            offset = int(norm_anchor)
-            total = self.hidden_states.shape[1]
-            idx = (total + offset) if offset < 0 else offset
-            idx = min(max(0, idx), total - 1)
-            return self.hidden_states[:, idx, :]
-
-        raise ValueError(
-            f"Unsupported anchor '{anchor}'. Supported named anchors: {self.supported_anchors()} "
-            f"or relative integer index strings (e.g. '-1', '0')."
-        )
+            case _:
+                try:
+                    return self.hidden_states[:, int(norm_anchor), :]
+                except ValueError:
+                    raise ValueError(
+                        f"Unsupported anchor '{anchor}'. Supported named anchors: {self.supported_anchors()} "
+                        f"or relative integer index strings (e.g. '-1', '0')."
+                    )
 
     def resolve_thought_boundary(self, anchor_type: str) -> torch.Tensor:
         """
@@ -107,9 +91,6 @@ class ExtractionResult:
             token_idx = min(self.prompt_tokens + gen_idx, self.hidden_states.shape[1] - 1)
             return self.hidden_states[:, token_idx, :]
 
-        # Fallback to first_gen for action_start, or post_gen for thought_end
-        if anchor_type == "action_start":
-            return self.resolve_anchor("first_gen")
         return self.resolve_anchor("post_gen")
 
     @property
@@ -122,11 +103,6 @@ class ExtractionResult:
         """Hidden state at the post-generation commitment token."""
         return self.resolve_anchor("post_gen")
 
-    @property
-    def last_prompt_state(self) -> torch.Tensor:
-        """Alias for pre_gen_state."""
-        return self.resolve_anchor("pre_gen")
-
     def get_anchor_state(
         self,
         anchor: str = "post_gen",
@@ -136,7 +112,7 @@ class ExtractionResult:
         Extracts residual-stream activations at a specific anchor position and layer slice.
         Args:
             anchor: Any supported anchor name ('pre_gen', 'post_gen', 'first_gen',
-                    'mean_gen', 'mean_prompt', 'mean_all', 'thought_end', 'action_start')
+                    'mean_gen', 'mean_prompt', 'mean_all', 'thought_end')
                     or relative integer offset.
             layer_ids: List of layer indices to select (None for all layers).
         Returns:
