@@ -1,7 +1,7 @@
 """
 BigCodeBench Benchmark Data Collection Script:
 Runs open-weight LLMs (e.g. Qwen2.5-Coder-7B-Instruct) on BigCodeBench coding tasks,
-extracts residual-stream activations at specified anchors (post_gen, pre_gen), and
+extracts residual-stream activations at specified anchors (post_gen, pre_gen, thought_end), and
 persists shard arrays and trajectory summaries for interpretability research.
 """
 
@@ -13,7 +13,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.activations import ActivationExtractor
-from src.benchmark.bigcodebench import BigCodeBenchmark
+from src.benchmark.bigcodebench.bigcodebench import BigCodeBenchmark
 from src.runner import Runner
 
 
@@ -29,8 +29,8 @@ def parse_args():
         "--subset",
         type=str,
         choices=["hard", "full"],
-        default="hard",
-        help="BigCodeBench benchmark subset (default: hard)",
+        default="full",
+        help="BigCodeBench benchmark subset: hard (148 tasks) or full (1140 tasks) (default: full)",
     )
     parser.add_argument(
         "--split",
@@ -42,8 +42,8 @@ def parse_args():
     parser.add_argument(
         "--num_tasks",
         type=int,
-        default=50,
-        help="Number of BigCodeBench tasks to run (default: 50 tasks)",
+        default=None,
+        help="Number of BigCodeBench tasks to run (default: None, runs all tasks in subset)",
     )
     parser.add_argument(
         "--n_rollouts",
@@ -70,23 +70,18 @@ def parse_args():
         help="Timeout in seconds for code evaluation execution (default: 15.0s)",
     )
     parser.add_argument(
-        "--sample_only",
-        action="store_true",
-        help="Use bundled sample tasks (offline quick verification)",
-    )
-    parser.add_argument(
         "--layers",
         type=int,
         nargs="+",
-        default=[20],
-        help="Transformer layer indices to extract (default: 20)",
+        default=[4, 10, 16, 18, 20, 22, 24, 27],
+        help="Transformer layer indices to extract (default: 4 10 16 18 20 22 24 27)",
     )
     parser.add_argument(
         "--anchors",
         type=str,
         nargs="+",
-        default=["post_gen", "pre_gen"],
-        help="Anchor tokens to extract (default: post_gen pre_gen)",
+        default=["post_gen", "pre_gen", "thought_end"],
+        help="Anchor tokens to extract (default: post_gen pre_gen thought_end)",
     )
     parser.add_argument(
         "--output_dir",
@@ -101,14 +96,25 @@ def main():
     args = parse_args()
     output_path = Path(args.output_dir)
 
+    # 1. Initialize Benchmark first to know exact task count
     print("=" * 65)
     print("BigCodeBench Activation Harvesting")
     print("=" * 65)
+    print("\n[1/3] Initializing BigCodeBench sandbox suite...")
+    benchmark = BigCodeBenchmark(
+        subset=args.subset,
+        split=args.split,
+        num_tasks=args.num_tasks,
+        timeout=args.timeout,
+    )
+    total_tasks = len(benchmark.list_tasks())
+    total_episodes = total_tasks * args.n_rollouts
+
     print(f"Model:              {args.model}")
     print(f"Subset:             {args.subset}")
     print(f"Split:              {args.split}")
-    print(f"Tasks:              {args.num_tasks} (Rollouts per task: {args.n_rollouts})")
-    print(f"Total Episodes:     {args.num_tasks * args.n_rollouts}")
+    print(f"Tasks:              {total_tasks} (Rollouts per task: {args.n_rollouts})")
+    print(f"Total Episodes:     {total_episodes}")
     print(f"Max Turns / Ep:     {args.max_steps}")
     print(f"Execution Timeout:  {args.timeout}s")
     print(f"Temperature:        {args.temperature}")
@@ -117,21 +123,9 @@ def main():
     print(f"Output Directory:   {output_path.resolve()}")
     print("=" * 65)
 
-    # 1. Initialize Activation Engine
-    print("\n[1/3] Loading model engine...")
+    # 2. Initialize Activation Engine
+    print("\n[2/3] Loading model engine...")
     extractor = ActivationExtractor(model=args.model)
-
-    # 2. Initialize BigCodeBench Benchmark
-    print("\n[2/3] Initializing BigCodeBench sandbox suite...")
-    benchmark = BigCodeBenchmark(
-        subset=args.subset,
-        split=args.split,
-        num_tasks=args.num_tasks,
-        timeout=args.timeout,
-        sample_only=args.sample_only,
-        single_turn=False if args.max_steps > 1 else True,
-    )
-    print(f"  -> Initialized {len(benchmark.list_tasks())} total BigCodeBench tasks.")
 
     # 3. Execute Runner
     print("\n[3/3] Starting code execution & activation harvesting...")
@@ -150,12 +144,12 @@ def main():
         temperature=args.temperature,
     )
 
-    total_episodes = len(results)
+    completed_episodes = len(results)
     successes = sum(1 for r in results if r["is_success"])
-    rate = (successes / total_episodes) * 100 if total_episodes > 0 else 0.0
+    rate = (successes / completed_episodes) * 100 if completed_episodes > 0 else 0.0
 
     print("\n" + "=" * 65)
-    print(f"BigCodeBench Complete! Success Rate: {rate:.1f}% ({successes}/{total_episodes})")
+    print(f"BigCodeBench Complete! Success Rate: {rate:.1f}% ({successes}/{completed_episodes})")
     print(f"Saved artifacts to: {output_path.resolve()}")
     print("=" * 65)
 

@@ -5,13 +5,10 @@ Unit and integration tests for the BigCodeBench benchmark adapter.
 from pathlib import Path
 import unittest
 
-from src.benchmark.bigcodebench import (
-    BigCodeBenchActionParser,
-    BigCodeBenchmark,
-)
+from src.benchmark.bigcodebench.bigcodebench import BigCodeBenchmark
 
 
-class TestBigCodeBenchActionParser(unittest.TestCase):
+class TestBigCodeBenchCodeExtraction(unittest.TestCase):
     def test_extract_markdown_python(self):
         text = (
             "Here is the solution to your problem:\n\n"
@@ -22,7 +19,7 @@ class TestBigCodeBenchActionParser(unittest.TestCase):
             "```\n\n"
             "This computes the square root."
         )
-        code = BigCodeBenchActionParser.extract_code(text, entry_point="task_func")
+        code = BigCodeBenchmark.extract_code(text, entry_point="task_func")
         self.assertIn("def task_func(x):", code)
         self.assertIn("import math", code)
         self.assertNotIn("Here is the solution", code)
@@ -39,7 +36,7 @@ class TestBigCodeBenchActionParser(unittest.TestCase):
             "    return sum(numbers)\n"
             "```"
         )
-        code = BigCodeBenchActionParser.extract_code(text, entry_point="task_func")
+        code = BigCodeBenchmark.extract_code(text, entry_point="task_func")
         self.assertNotIn("<think>", code)
         self.assertNotIn("First I need to", code)
         self.assertEqual(code, "def task_func(numbers):\n    return sum(numbers)")
@@ -56,27 +53,26 @@ class TestBigCodeBenchActionParser(unittest.TestCase):
             "    return val * 2\n"
             "```"
         )
-        code = BigCodeBenchActionParser.extract_code(text, entry_point="task_func")
+        code = BigCodeBenchmark.extract_code(text, entry_point="task_func")
         self.assertIn("def task_func(val):", code)
         self.assertNotIn("print('example')", code)
 
     def test_raw_code_extraction(self):
         text = "import os\n\ndef task_func():\n    return os.getcwd()\n"
-        code = BigCodeBenchActionParser.extract_code(text, entry_point="task_func")
+        code = BigCodeBenchmark.extract_code(text, entry_point="task_func")
         self.assertEqual(code, "import os\n\ndef task_func():\n    return os.getcwd()")
 
     def test_prepend_code_prompt_when_header_missing(self):
         body = "    return sum(numbers)\n"
         prompt = "def task_func(numbers):\n"
-        code = BigCodeBenchActionParser.extract_code(body, entry_point="task_func", code_prompt=prompt)
+        code = BigCodeBenchmark.extract_code(body, entry_point="task_func", code_prompt=prompt)
         self.assertIn("def task_func(numbers):", code)
         self.assertIn("return sum(numbers)", code)
 
 
 class TestBigCodeBenchmark(unittest.TestCase):
     def setUp(self):
-        # Use bundled sample tasks for deterministic, offline testing
-        self.bench = BigCodeBenchmark(sample_only=True, num_tasks=5, timeout=5.0)
+        self.bench = BigCodeBenchmark(subset="hard", num_tasks=5, timeout=5.0)
         self.tasks = self.bench.list_tasks()
 
     def tearDown(self):
@@ -97,7 +93,7 @@ class TestBigCodeBenchmark(unittest.TestCase):
         self.assertFalse(obs.is_done)
 
     def test_reset_complete(self):
-        bench_comp = BigCodeBenchmark(sample_only=True, split="complete", num_tasks=1)
+        bench_comp = BigCodeBenchmark(subset="hard", split="complete", num_tasks=1)
         tasks_comp = bench_comp.list_tasks()
         obs = bench_comp.reset(tasks_comp[0])
         self.assertIn("Complete the following Python function:", obs.observation_text)
@@ -124,7 +120,7 @@ class TestBigCodeBenchmark(unittest.TestCase):
         bad_code = "```python\ndef task_func(*args, **kwargs):\n    return -999999\n```"
         obs = self.bench.step(bad_code)
 
-        self.assertTrue(obs.is_done)
+        self.assertFalse(obs.is_done)
         self.assertEqual(obs.step_reward, 0.0)
         self.assertFalse(obs.info["success"])
         self.assertIn("Test execution failed:", obs.observation_text)
@@ -142,14 +138,14 @@ class TestBigCodeBenchmark(unittest.TestCase):
         self.assertFalse(self.bench.evaluate(task))
 
     def test_timeout_handled(self):
-        bench_quick = BigCodeBenchmark(sample_only=True, num_tasks=1, timeout=1.0)
+        bench_quick = BigCodeBenchmark(subset="hard", num_tasks=1, timeout=1.0)
         task = bench_quick.list_tasks()[0]
         bench_quick.reset(task)
 
         hang_code = "```python\ndef task_func(*args, **kwargs):\n    while True:\n        pass\n```"
         obs = bench_quick.step(hang_code)
 
-        self.assertTrue(obs.is_done)
+        self.assertFalse(obs.is_done)
         self.assertEqual(obs.step_reward, 0.0)
         self.assertIn("TimeoutExpired", obs.observation_text)
         self.assertFalse(bench_quick.evaluate(task))
@@ -157,7 +153,7 @@ class TestBigCodeBenchmark(unittest.TestCase):
 
     def test_multi_turn_interactive_recovery(self):
         bench_interactive = BigCodeBenchmark(
-            sample_only=True, num_tasks=1, single_turn=False, timeout=5.0
+            subset="hard", num_tasks=1, timeout=5.0
         )
         task = bench_interactive.list_tasks()[0]
         spec = bench_interactive.task_specs[task.info["task_idx"]]

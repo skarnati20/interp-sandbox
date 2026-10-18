@@ -32,71 +32,11 @@ class BigCodeBenchTaskSpec:
     libs: list[str] = field(default_factory=list)
 
 
-class BigCodeBenchActionParser:
-    """
-    Parses and sanitizes LLM completions into valid executable Python code.
-    Handles thinking tags (<think>...</think>), markdown code blocks,
-    conversational text, and docstring function headers.
-    """
-
-    @staticmethod
-    def extract_code(
-        action_str: str,
-        entry_point: Optional[str] = None,
-        code_prompt: Optional[str] = None,
-    ) -> str:
-        clean = action_str.strip()
-
-        # 1. Strip reasoning / thinking traces (e.g. <think>...</think>)
-        clean = re.sub(r"<think>.*?</think>", "", clean, flags=re.DOTALL | re.IGNORECASE).strip()
-
-        # 2. Extract markdown code blocks (```python ... ``` or ``` ... ```)
-        md_pattern = r"```(?:python|py)?\s*\n(.*?)```"
-        matches = re.findall(md_pattern, clean, flags=re.DOTALL | re.IGNORECASE)
-
-        candidate_code = ""
-        if matches:
-            if entry_point:
-                for block in matches:
-                    if f"def {entry_point}" in block or (f"{entry_point}(" in block):
-                        candidate_code = block.strip()
-                        break
-            if not candidate_code:
-                candidate_code = matches[0].strip()
-        else:
-            # 3. Handle raw code or conversational output
-            lines = clean.splitlines()
-            code_lines = []
-            capturing = False
-
-            for line in lines:
-                stripped = line.strip()
-                # Check for standard Python start lines
-                if stripped.startswith(("import ", "from ", "def ", "class ", "@")):
-                    capturing = True
-                if capturing:
-                    code_lines.append(line)
-
-            if code_lines:
-                candidate_code = "\n".join(code_lines).strip()
-            else:
-                candidate_code = clean
-
-        # 4. If only the function body was generated and entry_point definition is missing,
-        # prepend code_prompt if available
-        if entry_point and candidate_code:
-            has_func_def = re.search(rf"\bdef\s+{re.escape(entry_point)}\b", candidate_code)
-            if not has_func_def and code_prompt:
-                # Prepend the signature and imports from code_prompt
-                candidate_code = f"{code_prompt.rstrip()}\n{candidate_code}"
-
-        return candidate_code.strip()
-
-
 class BigCodeBenchmark(BaseBenchmark):
     """
     BigCodeBench benchmark environment adapter.
     Executes Python solutions against unittest test harnesses in isolated subprocesses.
+    Loads tasks exclusively from the official HuggingFace Hub dataset.
     """
 
     DEFAULT_SYSTEM_PROMPT = (
@@ -112,62 +52,73 @@ class BigCodeBenchmark(BaseBenchmark):
         num_tasks: Optional[int] = None,
         seed: int = 42,
         timeout: float = 15.0,
-        local_data_path: Optional[str | Path] = None,
-        sample_only: bool = False,
-        single_turn: bool = True,
     ):
         self.subset = subset.lower()
         self.split = split.lower()
         self.num_tasks = num_tasks
         self.seed = seed
         self.timeout = timeout
-        self.sample_only = sample_only
-        self.single_turn = single_turn
-        self.parser = BigCodeBenchActionParser()
 
-        # Load task specs
-        self.task_specs = self._load_task_specs(local_data_path)
+        # Load task specs exclusively from HuggingFace
+        self.task_specs = self.load_task_specs()
         if self.num_tasks is not None:
             self.task_specs = self.task_specs[: self.num_tasks]
 
-        self.tasks: list[TaskInstance] = self._create_task_instances()
+        self.tasks: list[TaskInstance] = self.create_task_instances()
 
         # Active episode state
-        self._active_task_spec: Optional[BigCodeBenchTaskSpec] = None
-        self._last_code: str = ""
-        self._is_completed: bool = False
-        self._last_reward: float = 0.0
+        self.active_task_spec: Optional[BigCodeBenchTaskSpec] = None
+        self.last_code: str = ""
+        self.is_completed: bool = False
+        self.last_reward: float = 0.0
 
-    def _load_task_specs(self, local_path: Optional[str | Path]) -> list[BigCodeBenchTaskSpec]:
-        """Loads tasks from local file, HuggingFace dataset cache, or bundled sample tasks."""
-        # 1. User specified local path
-        if local_path and Path(local_path).exists():
-            return self._load_from_file(Path(local_path))
+    @staticmethod
+    def extract_code(
+        action_str: str,
+        entry_point: Optional[str] = None,
+        code_prompt: Optional[str] = None,
+    ) -> str:
+        """
+        Parses and sanitizes LLM completions into valid executable Python code.
+        Strips thinking tags, extracts markdown blocks or raw code, and prepends
+        function headers if the model only generated the body.
+        """
+        # 1. Strip reasoning traces (<think>...</think>)
+        text = re.sub(r"<think>.*?</think>", "", action_str, flags=re.DOTALL | re.IGNORECASE).strip()
 
-        # 2. Bundled sample tasks if sample_only requested
-        sample_file = Path(__file__).parent / "sample_tasks.json"
-        if self.sample_only:
-            if sample_file.exists():
-                return self._load_from_file(sample_file)
+        # 2. Extract code from markdown blocks, preferring the block with entry_point
+        blocks = re.findall(r"```(?:python|py)?\s*\n(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)
+        if blocks:
+            code = next((b for b in blocks if entry_point and (f"def {entry_point}" in b or f"{entry_point}(" in b)), blocks[0]).strip()
+        else:
+            # For raw code, strip any conversational preamble before code keywords
+            match = re.search(r"^(?:import |from |def |class |@)", text, re.MULTILINE)
+            code = text[match.start():].strip() if match else text
 
-        # 3. Try loading via HuggingFace Hub (parquet)
+        # 3. If model generated only the function body, prepend function signature
+        if entry_point and code and code_prompt and not re.search(rf"\bdef\s+{re.escape(entry_point)}\b", code):
+            code = f"{code_prompt.rstrip()}\n{code}"
+
+        return code.strip()
+
+    def load_task_specs(self) -> list[BigCodeBenchTaskSpec]:
+        """Loads tasks exclusively from HuggingFace Hub."""
         repo_id = "bigcode/bigcodebench-hard" if self.subset == "hard" else "bigcode/bigcodebench"
         try:
             from huggingface_hub import hf_hub_download
             import pandas as pd
 
-            # Prefer latest version, fallback to available parquets
             parquet_filename = "data/v0.1.2-00000-of-00001.parquet"
             fpath = hf_hub_download(repo_id=repo_id, filename=parquet_filename, repo_type="dataset")
             df = pd.read_parquet(fpath)
             specs = []
-            for _, row in df.iterrows():
+            for row_idx, row in df.iterrows():
                 libs_val = row.get("libs", [])
                 if isinstance(libs_val, str):
                     try:
                         libs_val = json.loads(libs_val.replace("'", '"'))
                     except Exception:
-                        libs_val = [l.strip() for l in libs_val.strip("[]").split(",") if l.strip()]
+                        libs_val = [lib.strip() for lib in libs_val.strip("[]").split(",") if lib.strip()]
                 elif not isinstance(libs_val, list):
                     libs_val = []
 
@@ -185,50 +136,12 @@ class BigCodeBenchmark(BaseBenchmark):
                     )
                 )
             return specs
-        except Exception:
-            # Fallback to local sample tasks
-            if sample_file.exists():
-                return self._load_from_file(sample_file)
+        except Exception as err:
             raise RuntimeError(
-                f"Could not load BigCodeBench dataset from {repo_id} and sample file {sample_file} not found."
+                f"Could not load BigCodeBench dataset from {repo_id}: {err}"
             )
 
-    def _load_from_file(self, filepath: Path) -> list[BigCodeBenchTaskSpec]:
-        """Loads task specs from JSON or Parquet file."""
-        if filepath.suffix == ".parquet":
-            import pandas as pd
-
-            df = pd.read_parquet(filepath)
-            records = df.to_dict(orient="records")
-        else:
-            with open(filepath, "r", encoding="utf-8") as fp:
-                records = json.load(fp)
-
-        specs = []
-        for r in records:
-            libs = r.get("libs", [])
-            if isinstance(libs, str):
-                try:
-                    libs = json.loads(libs.replace("'", '"'))
-                except Exception:
-                    libs = [l.strip() for l in libs.strip("[]").split(",") if l.strip()]
-
-            specs.append(
-                BigCodeBenchTaskSpec(
-                    task_id=str(r["task_id"]),
-                    entry_point=str(r["entry_point"]),
-                    complete_prompt=str(r["complete_prompt"]),
-                    instruct_prompt=str(r["instruct_prompt"]),
-                    code_prompt=str(r["code_prompt"]),
-                    canonical_solution=str(r["canonical_solution"]),
-                    test=str(r["test"]),
-                    doc_struct=str(r.get("doc_struct", "")),
-                    libs=libs if isinstance(libs, list) else [],
-                )
-            )
-        return specs
-
-    def _create_task_instances(self) -> list[TaskInstance]:
+    def create_task_instances(self) -> list[TaskInstance]:
         instances = []
         for i, spec in enumerate(self.task_specs):
             if self.split == "instruct":
@@ -262,64 +175,64 @@ class BigCodeBenchmark(BaseBenchmark):
         self.close()
 
         task_idx = task.info.get("task_idx", 0)
-        self._active_task_spec = self.task_specs[task_idx]
-        self._last_code = ""
-        self._is_completed = False
-        self._last_reward = 0.0
+        self.active_task_spec = self.task_specs[task_idx]
+        self.last_code = ""
+        self.is_completed = False
+        self.last_reward = 0.0
 
         if self.split == "instruct":
             obs_text = (
-                f"Specification:\n{self._active_task_spec.instruct_prompt}\n\n"
-                f"Entry point function: {self._active_task_spec.entry_point}\n\n"
-                f"Function signature:\n{self._active_task_spec.code_prompt.strip()}"
+                f"Specification:\n{self.active_task_spec.instruct_prompt}\n\n"
+                f"Entry point function: {self.active_task_spec.entry_point}\n\n"
+                f"Function signature:\n{self.active_task_spec.code_prompt.strip()}"
             )
         else:
             obs_text = (
                 f"Complete the following Python function:\n\n"
-                f"{self._active_task_spec.complete_prompt.strip()}"
+                f"{self.active_task_spec.complete_prompt.strip()}"
             )
 
         return StepObservation(
             observation_text=obs_text,
             step_reward=0.0,
             is_done=False,
-            info={"task_id": task.task_id, "entry_point": self._active_task_spec.entry_point},
+            info={"task_id": task.task_id, "entry_point": self.active_task_spec.entry_point},
         )
 
     def step(self, action_str: str) -> StepObservation:
-        if not self._active_task_spec:
+        if not self.active_task_spec:
             raise RuntimeError("Environment not initialized. Call reset() before step().")
 
         # Handle submission / exit commands
         action_clean = action_str.strip()
-        if action_clean.lower() in ("submit", "done", "exit") and self._last_code:
+        if action_clean.lower() in ("submit", "done", "exit") and self.last_code:
             return StepObservation(
-                observation_text=f"Submitted solution. Success: {self._is_completed}",
-                step_reward=1.0 if self._is_completed else 0.0,
+                observation_text=f"Submitted solution. Success: {self.is_completed}",
+                step_reward=1.0 if self.is_completed else 0.0,
                 is_done=True,
-                info={"success": self._is_completed},
+                info={"success": self.is_completed},
             )
 
         # Parse and sanitize candidate Python solution
-        code = self.parser.extract_code(
+        code = self.extract_code(
             action_clean,
-            entry_point=self._active_task_spec.entry_point,
-            code_prompt=self._active_task_spec.code_prompt,
+            entry_point=self.active_task_spec.entry_point,
+            code_prompt=self.active_task_spec.code_prompt,
         )
-        self._last_code = code
+        self.last_code = code
 
         if not code:
             return StepObservation(
                 observation_text="[Observation: Empty code received. Please output executable Python code.]",
                 step_reward=0.0,
-                is_done=self.single_turn,
+                is_done=False,
                 info={"warning": "empty_code"},
             )
 
         # Execute code against unit tests in isolated subprocess
-        is_succ, error_msg = self._run_tests(code, self._active_task_spec)
-        self._is_completed = is_succ
-        self._last_reward = 1.0 if is_succ else 0.0
+        is_succ, error_msg = self.run_tests(code, self.active_task_spec)
+        self.is_completed = is_succ
+        self.last_reward = 1.0 if is_succ else 0.0
 
         if is_succ:
             obs_text = "All unit tests passed successfully!"
@@ -328,16 +241,16 @@ class BigCodeBenchmark(BaseBenchmark):
             # Truncate error message if too long
             truncated_err = error_msg[:1200] + ("\n...[truncated]" if len(error_msg) > 1200 else "")
             obs_text = f"Test execution failed:\n{truncated_err}"
-            is_done = self.single_turn
+            is_done = False
 
         return StepObservation(
             observation_text=obs_text,
-            step_reward=self._last_reward,
+            step_reward=self.last_reward,
             is_done=is_done,
             info={"success": is_succ, "error": error_msg if not is_succ else ""},
         )
 
-    def _run_tests(self, solution_code: str, spec: BigCodeBenchTaskSpec) -> tuple[bool, str]:
+    def run_tests(self, solution_code: str, spec: BigCodeBenchTaskSpec) -> tuple[bool, str]:
         """Runs the solution code with the task's unittest suite in a subprocess."""
         test_script = (
             f"import unittest\n"
@@ -371,14 +284,14 @@ class BigCodeBenchmark(BaseBenchmark):
                 return False, output
             except subprocess.TimeoutExpired:
                 return False, f"TimeoutExpired: Execution exceeded {self.timeout} seconds."
-            except Exception as e:
-                return False, f"Execution error: {str(e)}"
+            except Exception as err:
+                return False, f"Execution error: {str(err)}"
 
     def evaluate(self, task: TaskInstance) -> bool:
-        return self._is_completed
+        return self.is_completed
 
     def close(self) -> None:
-        self._active_task_spec = None
-        self._last_code = ""
-        self._is_completed = False
-        self._last_reward = 0.0
+        self.active_task_spec = None
+        self.last_code = ""
+        self.is_completed = False
+        self.last_reward = 0.0
