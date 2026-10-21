@@ -15,6 +15,8 @@ import subprocess
 import tempfile
 from typing import Callable, Optional
 
+from src.splits import file_revision
+
 from ..base import BaseBenchmark, StepObservation, TaskInstance
 
 
@@ -418,6 +420,11 @@ class InterCodeBashBenchmark(BaseBenchmark):
     def __init__(self, num_tasks: int = 100, seed: int = 42):
         self.seed = seed
         self.num_tasks = num_tasks
+        self.source_namespace = "intercode-bash-local"
+        self.source_provenance = {
+            "kind": "generated", "generator": "intercode-bash-local",
+            "generator_revision": file_revision(__file__), "parameters": {"seed": seed},
+        }
         self.task_specs = create_task_suite()[:num_tasks]
         self.task_list = self._generate_tasks()
 
@@ -443,8 +450,8 @@ class InterCodeBashBenchmark(BaseBenchmark):
             )
         return tasks
 
-    def list_tasks(self, split: str = "train") -> list[TaskInstance]:
-        return self.task_list
+    def list_tasks(self, split: Optional[str] = None) -> list[TaskInstance]:
+        return self.select_source_tasks(self.task_list, split)
 
     def reset(self, task: TaskInstance, seed: Optional[int] = None) -> StepObservation:
         self.close()

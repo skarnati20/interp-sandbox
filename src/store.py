@@ -24,6 +24,8 @@ class ShardWriter:
         layer_ids: Optional[list[int]] = None,
     ):
         self.output_dir = Path(output_dir)
+        if self.output_dir.exists() and (not self.output_dir.is_dir() or any(self.output_dir.iterdir())):
+            raise FileExistsError(f"Feature output must be empty; resume is not supported: {self.output_dir}")
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.shard_size = shard_size
         self.layer_ids = layer_ids
@@ -63,6 +65,8 @@ class ShardWriter:
 
         feat_path = self.output_dir / f"feat.shard{self.shard_idx}.npz"
         meta_path = self.output_dir / f"meta.shard{self.shard_idx}.jsonl"
+        if feat_path.exists() or meta_path.exists():
+            raise FileExistsError(f"Refusing to replace an existing shard: {feat_path} / {meta_path}")
 
         # Stack into [N, n_layers, hidden_dim]
         X = np.stack(self._current_feats, axis=0)
@@ -73,10 +77,11 @@ class ShardWriter:
         )
 
         # 1. Save compressed numpy tensor shard
-        np.savez_compressed(feat_path, X=X, layer_ids=layer_ids_arr)
+        with feat_path.open("xb") as fp:
+            np.savez_compressed(fp, X=X, layer_ids=layer_ids_arr)
 
         # 2. Save matching jsonl metadata shard
-        with open(meta_path, "w", encoding="utf-8") as fp:
+        with meta_path.open("x", encoding="utf-8") as fp:
             for record in self._current_metas:
                 fp.write(json.dumps(record) + "\n")
 

@@ -1,0 +1,126 @@
+{
+  "description": "Synthetic rows with the five release partition names and string fields declared by the real Hub dataset card; task IDs intentionally repeat across releases.",
+  "config": "default",
+  "partitions": {
+    "v0.1.0_hf": [
+      {
+        "task_id": "BigCodeBench/0",
+        "entry_point": "task_func",
+        "complete_prompt": "def task_func(numbers):\n    \"\"\"Return the sum of numbers.\"\"\"\n",
+        "instruct_prompt": "[v0.1.0_hf] Write task_func(numbers) returning their sum.",
+        "code_prompt": "def task_func(numbers):",
+        "canonical_solution": "    return sum(numbers)",
+        "test": "class TestCases(unittest.TestCase):\n    def test_sum(self):\n        self.assertEqual(task_func([1, 2]), 3)",
+        "libs": "['math']",
+        "doc_struct": "{}"
+      },
+      {
+        "task_id": "BigCodeBench/1",
+        "entry_point": "task_func",
+        "complete_prompt": "def task_func(numbers):\n    \"\"\"Return the sum of numbers.\"\"\"\n",
+        "instruct_prompt": "[v0.1.0_hf] Write task_func(numbers) returning their sum.",
+        "code_prompt": "def task_func(numbers):",
+        "canonical_solution": "    return sum(numbers)",
+        "test": "class TestCases(unittest.TestCase):\n    def test_sum(self):\n        self.assertEqual(task_func([1, 2]), 3)",
+        "libs": "['math']",
+        "doc_struct": "{}"
+      }
+    ],
+    "v0.1.1": [
+      {
+        "task_id": "BigCodeBench/0",
+        "entry_point": "task_func",
+        "complete_prompt": "def task_func(numbers):\n    \"\"\"Return the sum of numbers.\"\"\"\n",
+        "instruct_prompt": "[v0.1.1] Write task_func(numbers) returning their sum.",
+        "code_prompt": "def task_func(numbers):",
+        "canonical_solution": "    return sum(numbers)",
+        "test": "class TestCases(unittest.TestCase):\n    def test_sum(self):\n        self.assertEqual(task_func([1, 2]), 3)",
+        "libs": "['math']",
+        "doc_struct": "{}"
+      },
+      {
+        "task_id": "BigCodeBench/1",
+        "entry_point": "task_func",
+        "complete_prompt": "def task_func(numbers):\n    \"\"\"Return the sum of numbers.\"\"\"\n",
+        "instruct_prompt": "[v0.1.1] Write task_func(numbers) returning their sum.",
+        "code_prompt": "def task_func(numbers):",
+        "canonical_solution": "    return sum(numbers)",
+        "test": "class TestCases(unittest.TestCase):\n    def test_sum(self):\n        self.assertEqual(task_func([1, 2]), 3)",
+        "libs": "['math']",
+        "doc_struct": "{}"
+      }
+    ],
+    "v0.1.2": [
+      {
+        "task_id": "BigCodeBench/0",
+        "entry_point": "task_func",
+        "complete_prompt": "def task_func(numbers):\n    \"\"\"Return the sum of numbers.\"\"\"\n",
+        "instruct_prompt": "[v0.1.2] Write task_func(numbers) returning their sum.",
+        "code_prompt": "def task_func(numbers):",
+        "canonical_solution": "    return sum(numbers)",
+        "test": "class TestCases(unittest.TestCase):\n    def test_sum(self):\n        self.assertEqual(task_func([1, 2]), 3)",
+        "libs": "['math']",
+        "doc_struct": "{}"
+      },
+      {
+        "task_id": "BigCodeBench/1",
+        "entry_point": "task_func",
+        "complete_prompt": "def task_func(numbers):\n    \"\"\"Return the sum of numbers.\"\"\"\n",
+        "instruct_prompt": "[v0.1.2] Write task_func(numbers) returning their sum.",
+        "code_prompt": "def task_func(numbers):",
+        "canonical_solution": "    return sum(numbers)",
+        "test": "class TestCases(unittest.TestCase):\n    def test_sum(self):\n        self.assertEqual(task_func([1, 2]), 3)",
+        "libs": "['math']",
+        "doc_struct": "{}"
+      }
+    ],
+    "v0.1.3": [
+      {
+        "task_id": "BigCodeBench/0",
+        "entry_point": "task_func",
+        "complete_prompt": "def task_func(numbers):\n    \"\"\"Return the sum of numbers.\"\"\"\n",
+        "instruct_prompt": "[v0.1.3] Write task_func(numbers) returning their sum.",
+        "code_prompt": "def task_func(numbers):",
+        "canonical_solution": "    return sum(numbers)",
+        "test": "class TestCases(unittest.TestCase):\n    def test_sum(self):\n        self.assertEqual(task_func([1, 2]), 3)",
+        "libs": "['math']",
+        "doc_struct": "{}"
+      },
+      {
+        "task_id": "BigCodeBench/1",
+        "entry_point": "task_func",
+        "complete_prompt": "def task_func(numbers):\n    \"\"\"Return the sum of numbers.\"\"\"\n",
+        "instruct_prompt": "[v0.1.3] Write task_func(numbers) returning their sum.",
+        "code_prompt": "def task_func(numbers):",
+        "canonical_solution": "    return sum(numbers)",
+        "test": "class TestCases(unittest.TestCase):\n    def test_sum(self):\n        self.assertEqual(task_func([1, 2]), 3)",
+        "libs": "['math']",
+        "doc_struct": "{}"
+      }
+    ],
+    "v0.1.4": [
+      {
+        "task_id": "BigCodeBench/0",
+        "entry_point": "task_func",
+        "complete_prompt": "def task_func(numbers):\n    \"\"\"Return the sum of numbers.\"\"\"\n",
+        "instruct_prompt": "[v0.1.4] Write task_func(numbers) returning their sum.",
+        "code_prompt": "def task_func(numbers):",
+        "canonical_solution": "    return sum(numbers)",
+        "test": "class TestCases(unittest.TestCase):\n    def test_sum(self):\n        self.assertEqual(task_func([1, 2]), 3)",
+        "libs": "['math']",
+        "doc_struct": "{}"
+      },
+      {
+        "task_id": "BigCodeBench/1",
+        "entry_point": "task_func",
+        "complete_prompt": "def task_func(numbers):\n    \"\"\"Return the sum of numbers.\"\"\"\n",
+        "instruct_prompt": "[v0.1.4] Write task_func(numbers) returning their sum.",
+        "code_prompt": "def task_func(numbers):",
+        "canonical_solution": "    return sum(numbers)",
+        "test": "class TestCases(unittest.TestCase):\n    def test_sum(self):\n        self.assertEqual(task_func([1, 2]), 3)",
+        "libs": "['math']",
+        "doc_struct": "{}"
+      }
+    ]
+  }
+}
