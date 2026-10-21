@@ -203,9 +203,9 @@ class ShardReader:
         layer: Optional[int] = None,
     ) -> Optional[ActivationDataset]:
         """Loads and filters a single shard pair."""
-        npz_data = np.load(feat_path)
-        raw_x = npz_data["X"]            # Shape: [N, n_layers, hidden_dim] or [N, hidden_dim]
-        layer_ids = list(npz_data["layer_ids"])
+        with np.load(feat_path) as npz_data:
+            raw_x = np.array(npz_data["X"], copy=True)
+            layer_ids = list(npz_data["layer_ids"])
         meta_df = pd.read_json(meta_path, lines=True)
 
         # 1. Filter by anchor if specified
