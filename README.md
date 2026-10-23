@@ -135,7 +135,7 @@ python scripts/collect_textcraft.py \
   --output_dir artifacts/textcraft/qwen7b
 ```
 
-All collection scripts accept `--split_manifest`, `--model_revision`,
+All three collection scripts accept `--split_manifest`, `--model_revision`,
 `--source_split`, and `--max_new_tokens` (default 512 tokens per decision).
 An official source filter is invalid for generated tasks. Use a new or empty
 output directory per model/run and matching benchmark generation settings.
@@ -162,7 +162,55 @@ start a fresh output directory to collect again with the same manifest.
 Python. Without a manifest, collection records provenance and leaves probe
 assignments unset so a manifest can be created afterward.
 
-### Load activations and apply the saved manifest
+### Use the probe training API
+
+The probe API uses `src.store.ActivationDataset`, loaded by `ShardReader`, and
+`src.probe.split.split_activation_dataset` returns `(train_set, eval_set)`.
+Pass `manifest=` to that existing splitter to reuse saved assignments:
+
+```python
+from src.store import ShardReader
+from src.probe.split import split_activation_dataset
+from src.probe.probes.linear_probe import LinearProbe
+from src.probe.train import train_and_evaluate
+from src.splits import load_split_manifest
+
+manifest = load_split_manifest("data/manifests/textcraft-goals.json")
+dataset = ShardReader("artifacts/textcraft/qwen7b").read_all(anchor="pre_gen", layer=20)
+train_set, test_set = split_activation_dataset(dataset, manifest=manifest)
+result = train_and_evaluate(
+    LinearProbe(), train_set=train_set, eval_set=test_set,
+    train_max_turn=1, eval_max_turn=1,
+)
+# Equivalently: train_and_evaluate(LinearProbe(), dataset=dataset, manifest=manifest)
+```
+
+Select one layer when loading for the existing probes, which expect a 2D feature
+matrix. The linear, MLP, and XGBoost implementations and `Probe` base class are
+unchanged. The splitter retains `divergent_tasks_only`, training-set balancing via
+`target_success_ratio`, and the training pipeline's separate turn cutoffs.
+With a manifest, filtering and balancing happen after assignment and never move
+tasks between partitions. `eval_size` and `group_by` apply only to the exploratory
+random split; `seed` can still control balancing. For manifest comparisons, use
+`manifest=`; a collection carrying established assignments cannot be randomly
+split again. Missing model-specific tasks can yield an empty partition; collect
+more tasks before fitting or evaluating a probe on that partition.
+
+The native splitter defaults to probe partitions `train` and `test`. Pass
+`train_split=` / `eval_split=` for other saved names. If either requested partition
+is absent from the manifest, it raises an error instead of inventing a missing
+training set. Use `src.probe.split.apply_activation_manifest` to annotate a
+single-partition dataset without requesting a train/test pair.
+
+For existing collections, `src.probe.split.create_manifest_from_activations`
+accepts the same catalog, provenance, and explicit regrouping options as the
+Hugging Face view below. Hub downloads use the shared `src.hf.download_activations`;
+`ShardReader.read_from_huggingface` accepts `revision`, `cache_dir`, and
+`local_files_only` alongside its existing anchor/layer filters. The Arrow view
+uses this same downloader and shard validation, and both views share one manifest
+implementation.
+
+### Load the optional Hugging Face Dataset view
 
 ```python
 from src.data import load_activation_dataset, load_train_test_split, split_activation_dataset
@@ -253,7 +301,9 @@ Run the offline test suite with:
 HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 python -m unittest discover -s tests -v
 ```
 
-The tests use a synthetic five-release BigCodeBench fixture with repeated task IDs
+The tests also exercise the native splitter, all three probe implementations,
+divergence/balancing controls, and separate turn cutoffs. They use a synthetic
+five-release BigCodeBench fixture with repeated task IDs
 and the Hub card's field types, a real local TextCraft environment with a fixture
 extractor, temporary NPZ/JSONL/Parquet files, and mocked Hub/model loading. The
 offline suite does not download official benchmark rows or execute real model

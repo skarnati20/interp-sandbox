@@ -219,3 +219,103 @@ def apply_split_manifest(records: list[TaskRecord], manifest: dict) -> list[dict
             "probe_split": entry["probe_split"] if selected else None, "manifest_id": manifest["manifest_id"],
         })
     return annotations
+
+
+def activation_records(rows, *, task_catalog=None, namespace=None, provenance=None,
+                        grouping="task", group_column=None, allow_regroup=False):
+    """Resolve legacy rows explicitly; never infer official provenance from task names."""
+    if allow_regroup:
+        for column in ("probe_split", "manifest_id"):
+            if any(row.get(column) is not None for row in rows):
+                raise ValueError("Cannot regroup a collection with existing probe assignments or a manifest")
+        if grouping != "task" and task_catalog is None and group_column is None:
+            raise ValueError("Explicit regrouping requires a task_catalog or group_column")
+    by_id = {}
+    for record in task_catalog or []:
+        by_id.setdefault(record.task_id, []).append(record)
+    records = []
+    for original in rows:
+        row = dict(original)
+        if isinstance(row.get("source_provenance"), str):
+            row["source_provenance"] = json.loads(row["source_provenance"])
+        task_id = row.get("task_id")
+        row_namespace = row.get("namespace") or namespace
+        candidates = [record for record in by_id.get(task_id, [])
+                      if row_namespace is None or record.namespace == row_namespace]
+        if row.get("source_split") is not None:
+            candidates = [record for record in candidates if record.source_split == row["source_split"]]
+        if row.get("source_task_id") is not None:
+            candidates = [record for record in candidates
+                          if (record.source_task_id or record.task_id) == row["source_task_id"]]
+        if row.get("task_uid") is not None:
+            candidates = [record for record in candidates if record.task_uid == row["task_uid"]]
+        if task_catalog is not None:
+            if len(candidates) != 1:
+                raise ValueError(f"Unknown or ambiguous task in supplied catalog: {task_id}")
+            record = candidates[0]
+            # Validate any existing provenance/identity rather than overwrite it.
+            if row.get("source_provenance") is not None and row["source_provenance"] != record.provenance:
+                raise ValueError(f"Source provenance differs for task {task_id}")
+            if row.get("source_task_id") is not None and row["source_task_id"] != (record.source_task_id or record.task_id):
+                raise ValueError(f"Original source task ID differs for task {task_id}")
+        else:
+            source = row.get("source_provenance") or provenance
+            if row_namespace is None or not source:
+                raise ValueError("Legacy rows require an explicit namespace and provenance, or a task_catalog")
+            if group_column:
+                if row.get(group_column) is None or row[group_column] == "":
+                    raise ValueError(f"Missing grouping column: {group_column}")
+                group_key = str(row[group_column])
+            elif grouping == "task":
+                group_key = row.get("source_task_id") or task_id
+            elif row.get("group_id"):
+                saved_namespace, group_key = json.loads(row["group_id"])
+                if saved_namespace != row_namespace:
+                    raise ValueError("Group namespace differs from task namespace")
+            else:
+                raise ValueError("Non-task grouping requires a catalog or explicit group_column")
+            record = TaskRecord(row_namespace, task_id, row.get("source_split"), source, group_key,
+                                source_task_id=row.get("source_task_id"))
+        if row.get("task_uid") is not None and row["task_uid"] != record.task_uid:
+            raise ValueError(f"Task identity differs for task {task_id}")
+        if not allow_regroup and row.get("group_id") is not None and row["group_id"] != record.group_id:
+            raise ValueError(f"Group differs for task {task_id}")
+        if not allow_regroup and row.get("grouping") is not None and row["grouping"] != grouping:
+            raise ValueError(f"Grouping mode differs for task {task_id}")
+        records.append(record)
+    return records
+
+
+def create_manifest_from_metadata(rows: list[dict], *, policy: str, task_catalog=None,
+                                     namespace=None, provenance=None, grouping="task",
+                                     group_column=None, allow_regroup: bool = False, **policy_options) -> dict:
+    """
+    Bootstrap one manifest for existing collections. With task_catalog, use the
+    full supplied universe even if the collection is incomplete. Without it,
+    only observed tasks are known; explicitly describe unknown legacy provenance.
+    Save the result with save_split_manifest and reuse it for every model.
+    allow_regroup explicitly replaces provisional groups only when the entire
+    input collection has no probe assignments or manifest IDs.
+    """
+    observed = activation_records(rows, task_catalog=task_catalog, namespace=namespace,
+                                   provenance=provenance, grouping=grouping, group_column=group_column,
+                                   allow_regroup=allow_regroup)
+    manifest = create_split_manifest(task_catalog if task_catalog is not None else observed,
+                                     policy=policy, grouping=grouping, **policy_options)
+    _check_existing_annotations(rows, apply_split_manifest(observed, manifest))
+    return manifest
+
+
+def _check_existing_annotations(rows: list[dict], annotations: list[dict]) -> None:
+    for row, annotation in zip(rows, annotations):
+        for key in ("probe_split", "manifest_id"):
+            if row.get(key) is not None and row[key] != annotation[key]:
+                raise ValueError(f"Existing {key} conflicts with saved manifest")
+
+
+def annotate_activation_metadata(rows: list[dict], manifest: dict, **identity_options) -> list[dict]:
+    records = activation_records(rows, grouping=manifest["grouping"], **identity_options)
+    annotations = apply_split_manifest(records, manifest)
+    _check_existing_annotations(rows, annotations)
+    return [dict(row, **annotation, grouping=manifest["grouping"])
+            for row, annotation in zip(rows, annotations)]

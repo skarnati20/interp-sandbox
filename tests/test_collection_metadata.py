@@ -246,7 +246,7 @@ class TestCollectionMetadata(unittest.TestCase):
     def test_collectors_reject_occupied_outputs_before_model_or_benchmark_loading(self):
         benchmark_names = {
             "collect_bigcodebench.py": "BigCodeBenchmark", "collect_textcraft.py": "TextCraftBenchmark",
-            "collect_intercode_bash.py": "InterCodeBashBenchmark", "collect_miniwob.py": "MiniWoBBenchmark",
+            "collect_miniwob.py": "MiniWoBBenchmark",
         }
         scripts = Path(__file__).resolve().parent.parent / "scripts"
         with tempfile.TemporaryDirectory() as directory:

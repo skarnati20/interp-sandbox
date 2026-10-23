@@ -193,7 +193,7 @@ class TestActivationData(unittest.TestCase):
         self.assertEqual(original[0]["success"], 0)
         self.assertEqual(changed[0]["success"], 1)
 
-    @patch("src.data.snapshot_download")
+    @patch("src.hf.snapshot_download")
     def test_hub_download_selects_one_run_and_passes_download_options(self, download):
         download.return_value = str(self.directory)
         splits = load_train_test_split(
@@ -214,6 +214,7 @@ class TestActivationData(unittest.TestCase):
             token="test-token",
             cache_dir=self.cache_dir,
             local_files_only=True,
+            local_dir=None,
             allow_patterns=[
                 "benchmark/model/feat.shard*.npz",
                 "benchmark/model/meta.shard*.jsonl",
@@ -222,7 +223,7 @@ class TestActivationData(unittest.TestCase):
             ],
         )
 
-    @patch("src.data.snapshot_download")
+    @patch("src.hf.snapshot_download")
     def test_invalid_hub_directory_is_rejected_before_download(self, download):
         for directory in ("../other", "/absolute", "run/../../other"):
             with self.subTest(directory=directory), self.assertRaises(ValueError):

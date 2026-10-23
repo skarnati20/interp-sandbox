@@ -71,17 +71,23 @@ model commit through `--model_revision` to repeat a model version.
 ## 3. Apply the saved manifest to each collection
 
 ```python
-from src.data import load_activation_dataset, split_activation_dataset
+from src.store import ShardReader
+from src.probe.split import split_activation_dataset
 from src.splits import load_split_manifest
 
 manifest = load_split_manifest("data/manifests/textcraft-goals.json")
 probe_data = {}
 for model in ("qwen05b", "qwen15b"):
-    rows = load_activation_dataset(f"artifacts/textcraft/comparison-001/{model}")
-    probe_data[model] = split_activation_dataset(rows, manifest)
-    print(model, {name: len(partition) for name, partition in probe_data[model].items()})
+    rows = ShardReader(f"artifacts/textcraft/comparison-001/{model}").read_all(
+        anchor="pre_gen", layer=20,
+    )
+    train, test = split_activation_dataset(rows, manifest=manifest)
+    probe_data[model] = {"train": train, "test": test}
+    print(model, train.num_samples, test.num_samples)
 ```
 
+This uses the existing native `ActivationDataset` and probe splitter. Selecting
+one layer yields the 2D matrix expected by the owner's probe implementations.
 Applying the manifest never reassigns tasks. Missing tasks in an incomplete
 collection simply yield fewer rows, possibly an empty probe partition.
 
@@ -100,30 +106,43 @@ splits = load_train_test_split(
 This snippet assumes the run was previously uploaded to that subdirectory.
 It does not create or publish a dataset.
 
-## 4. Prepare one model's probe inputs
+## 4. Train and evaluate the existing probe
 
 ```python
-from torch.utils.data import DataLoader
+from src.probe.probes.linear_probe import LinearProbe
+from src.probe.train import train_and_evaluate
 
 splits = probe_data["qwen05b"]
-train = splits["train"].filter(lambda row: row["anchor"] == "pre_gen")
-test = splits["test"].filter(lambda row: row["anchor"] == "pre_gen")
-train_loader = DataLoader(
-    train.with_format("torch", columns=["activations", "success"]),
-    batch_size=64, shuffle=True,
+result = train_and_evaluate(
+    LinearProbe(), train_set=splits["train"], eval_set=splits["test"],
+    train_max_turn=1, eval_max_turn=1,
 )
-test_loader = DataLoader(
-    test.with_format("torch", columns=["activations", "success"]),
-    batch_size=64, shuffle=False,
-)
-batch = next(iter(train_loader))
-X = batch["activations"].flatten(start_dim=1)
-y_failure = 1 - batch["success"]
+print(result["eval_metrics"])
 ```
 
-Each row's label describes its episode's final outcome. This example uses
-pre-generation activations at every decision. Filter `step_idx == 0` as well
-if the experiment specifically predicts failure from the first decision.
+Each row's label describes its episode's final outcome (`success=1`). This
+example uses pre-generation activations from the first decision, using the
+existing turn cutoff controls. MLP and XGBoost probes use the same interface.
+To split and train in one call, use
+`train_and_evaluate(LinearProbe(), dataset=rows, manifest=manifest)`.
+Divergence filtering and class balancing remain available through the splitter;
+they do not recreate or change saved task assignments. Actual fitting needs
+nonempty train/test data and the label diversity required by the chosen probe.
+
+If you prefer Arrow datasets or a custom PyTorch pipeline, the optional view is:
+
+```python
+from src.data import load_activation_dataset, split_activation_dataset as huggingface_splits
+
+rows = load_activation_dataset("artifacts/textcraft/comparison-001/qwen05b")
+splits = huggingface_splits(rows, manifest)
+train = splits["train"].with_format("torch", columns=["activations", "success"])
+splits.save_to_disk("data/textcraft-probe-splits")
+```
+
+That view retains `[layers, hidden_dim]` per row and returns a `DatasetDict`.
+It shares shard validation, downloads, and manifest assignment with the native
+probe API; use `src.probe.split` for the native `(train_set, eval_set)` interface.
 
 ## Collect first, then choose crafting-goal groups
 
@@ -133,12 +152,13 @@ task groups but no probe assignments or manifest IDs. Then explicitly regroup:
 
 ```python
 from src.benchmark.textcraft import TextCraftBenchmark
-from src.data import create_manifest_from_activations, load_activation_dataset, split_activation_dataset
+from src.store import ShardReader
+from src.probe.split import create_manifest_from_activations, split_activation_dataset
 from src.splits import save_split_manifest
 
 benchmark = TextCraftBenchmark(num_tasks=50, seed=42)
 catalog = benchmark.task_catalog(grouping="crafting_goal")
-rows = load_activation_dataset("artifacts/textcraft/collect-first-001/qwen05b")
+rows = ShardReader("artifacts/textcraft/collect-first-001/qwen05b").read_all(anchor="pre_gen", layer=20)
 manifest = create_manifest_from_activations(
     rows,
     task_catalog=catalog,
@@ -149,8 +169,8 @@ manifest = create_manifest_from_activations(
     allow_regroup=True,
 )
 save_split_manifest(manifest, "data/manifests/collect-first-goals.json")
-splits = split_activation_dataset(
-    rows, manifest, task_catalog=catalog, allow_regroup=True,
+train, test = split_activation_dataset(
+    rows, manifest=manifest, task_catalog=catalog, allow_regroup=True,
 )
 ```
 
@@ -185,7 +205,8 @@ them. Use a holdout within the selected release.
 
 Regression tests use synthetic data matching the five-release Hub layout,
 mocked Hub/model loading, fixture tensors, and the real local TextCraft adapter.
-They exercise serialization, regrouping, incomplete collections, and output
-protection. Reading the public dataset cards checks release names and layout;
+They exercise serialization, regrouping, incomplete collections, output
+protection, and compatibility with the native splitter and all three probes.
+The original probe implementations remain unchanged. Reading the public dataset cards checks release names and layout;
 it is not an execution test against downloaded BigCodeBench rows. The two real
 model collection commands above have not been executed as part of those tests.
