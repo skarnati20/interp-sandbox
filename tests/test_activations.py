@@ -3,9 +3,11 @@ Unit tests for activation extraction and anchor resolution.
 """
 
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 import torch
 
-from src.activations import ExtractionResult
+from src.activations import ActivationExtractor, ExtractionResult, validate_layer_ids
 
 
 class TestAnchorResolution(unittest.TestCase):
@@ -65,6 +67,27 @@ class TestAnchorResolution(unittest.TestCase):
         state_last = self.result.get_anchor_state("-1")
         post = self.result.get_anchor_state("post_gen")
         self.assertTrue(torch.equal(state_last, post))
+
+    def test_invalid_layers_are_rejected_instead_of_clamped(self):
+        for layers in ([-1], [4], [1.5], [True], [], [1, 1]):
+            with self.subTest(layers=layers), self.assertRaises(ValueError):
+                self.result.get_anchor_state(layer_ids=layers)
+        self.assertEqual(validate_layer_ids(None, 4), [0, 1, 2, 3])
+
+
+class TestModelProvenance(unittest.TestCase):
+    @patch("src.activations.AutoModelForCausalLM.from_pretrained")
+    @patch("src.activations.AutoTokenizer.from_pretrained")
+    @patch("src.activations.HfApi")
+    def test_resolved_model_revision_pins_model_and_tokenizer(self, api, tokenizer, model):
+        api.return_value.model_info.return_value.sha = "actual-model-commit"
+        model.return_value.config = SimpleNamespace(num_hidden_layers=4)
+        extractor = ActivationExtractor("owner/model", device="cpu", revision="moving-branch")
+        api.return_value.model_info.assert_called_once_with("owner/model", revision="moving-branch", token=None)
+        self.assertEqual(tokenizer.call_args.kwargs["revision"], "actual-model-commit")
+        self.assertEqual(model.call_args.kwargs["revision"], "actual-model-commit")
+        self.assertEqual(extractor.metadata["model_revision"], "actual-model-commit")
+        self.assertEqual(extractor.num_layers, 4)
 
 
 if __name__ == "__main__":

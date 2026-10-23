@@ -89,12 +89,21 @@ def parse_args():
         default="artifacts/bigcodebench/qwen2.5-7b/qwen2.5-7b",
         help="Directory to persist features and summaries",
     )
+    parser.add_argument("--model_revision", default=None, help="Model revision to resolve and pin")
+    parser.add_argument("--split_manifest", default=None, help="Existing task-to-probe-split manifest JSON")
+    parser.add_argument("--source_split", default=None, help="Optional exact source filter; must match --release")
+    parser.add_argument("--dataset_config", default=None, help="Hugging Face dataset configuration")
+    parser.add_argument("--dataset_revision", default=None, help="Dataset revision to resolve and pin")
+    parser.add_argument("--release", default=BigCodeBenchmark.DEFAULT_RELEASE,
+                        help="One official release partition (default: v0.1.4); never combines releases")
+    parser.add_argument("--max_new_tokens", type=int, default=512, help="Maximum generated tokens per decision (default: 512)")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
     output_path = Path(args.output_dir)
+    Runner.validate_output_directory(output_path)
 
     # 1. Initialize Benchmark first to know exact task count
     print("=" * 65)
@@ -106,12 +115,16 @@ def main():
         split=args.split,
         num_tasks=args.num_tasks,
         timeout=args.timeout,
+        dataset_config=args.dataset_config,
+        dataset_revision=args.dataset_revision,
+        release=args.release,
     )
-    total_tasks = len(benchmark.list_tasks())
+    total_tasks = len(benchmark.list_tasks(split=args.source_split))
     total_episodes = total_tasks * args.n_rollouts
 
     print(f"Model:              {args.model}")
     print(f"Subset:             {args.subset}")
+    print(f"Release:            {args.release}")
     print(f"Split:              {args.split}")
     print(f"Tasks:              {total_tasks} (Rollouts per task: {args.n_rollouts})")
     print(f"Total Episodes:     {total_episodes}")
@@ -125,7 +138,7 @@ def main():
 
     # 2. Initialize Activation Engine
     print("\n[2/3] Loading model engine...")
-    extractor = ActivationExtractor(model=args.model)
+    extractor = ActivationExtractor(model=args.model, revision=args.model_revision)
 
     # 3. Execute Runner
     print("\n[3/3] Starting code execution & activation harvesting...")
@@ -135,13 +148,16 @@ def main():
         output_dir=output_path,
         layer_ids=args.layers,
         anchors=args.anchors,
+        split_manifest=args.split_manifest,
     )
 
     results = runner.run_benchmark(
+        split=args.source_split,
         max_tasks=args.num_tasks,
         max_steps=args.max_steps,
         n_rollouts=args.n_rollouts,
         temperature=args.temperature,
+        max_new_tokens=args.max_new_tokens,
     )
 
     completed_episodes = len(results)

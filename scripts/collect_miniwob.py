@@ -86,12 +86,17 @@ def parse_args():
         default="artifacts/miniwob/qwen2.5-7b/qwen2.5-7b",
         help="Directory to persist features and summaries",
     )
+    parser.add_argument("--model_revision", default=None, help="Model revision to resolve and pin")
+    parser.add_argument("--split_manifest", default=None, help="Existing task-to-probe-split manifest JSON")
+    parser.add_argument("--source_split", default=None, help="Exact official source partition (default: all)")
+    parser.add_argument("--max_new_tokens", type=int, default=512, help="Maximum generated tokens per decision (default: 512)")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
     output_path = Path(args.output_dir)
+    Runner.validate_output_directory(output_path)
 
     print("=" * 65)
     print("MiniWoB++ Activation Collection & Feature Extraction")
@@ -109,7 +114,7 @@ def main():
 
     # 1. Initialize Activation Extractor
     print("\n[1/3] Loading model engine...")
-    extractor = ActivationExtractor(model=args.model)
+    extractor = ActivationExtractor(model=args.model, revision=args.model_revision)
 
     # 2. Initialize MiniWoB Benchmark
     print("\n[2/3] Initializing MiniWoB++ headless browser environments...")
@@ -129,13 +134,16 @@ def main():
         output_dir=output_path,
         layer_ids=args.layers,
         anchors=args.anchors,
+        split_manifest=args.split_manifest,
     )
 
     results = runner.run_benchmark(
+        split=args.source_split,
         max_tasks=args.num_tasks,
         max_steps=args.max_steps,
         n_rollouts=args.n_rollouts,
         temperature=args.temperature,
+        max_new_tokens=args.max_new_tokens,
     )
 
     total_episodes = len(results)

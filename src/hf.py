@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 from huggingface_hub import snapshot_download
-
-from .activations import ExtractionResult
 
 
 def download_activations(
@@ -12,7 +10,10 @@ def download_activations(
     repo_type: str = "dataset",
     allow_patterns: Optional[list[str]] = None,
     local_dir: Optional[str | Path] = None,
-    token: Optional[str] = None,
+    token: Optional[str | bool] = None,
+    revision: Optional[str] = None,
+    cache_dir: Optional[str | Path] = None,
+    local_files_only: bool = False,
 ) -> Path:
     """
     Downloads activation shards and metadata from a Hugging Face repository.
@@ -36,5 +37,8 @@ def download_activations(
         allow_patterns=allow_patterns,
         local_dir=str(local_dir) if local_dir is not None else None,
         token=token,
+        revision=revision,
+        cache_dir=cache_dir,
+        local_files_only=local_files_only,
     )
     return Path(download_dir)

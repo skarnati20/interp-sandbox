@@ -1,10 +1,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from numbers import Integral
+from pathlib import Path
 import re
 from typing import Optional
 import torch
+from huggingface_hub import HfApi
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from src.splits import file_revision
+
+
+def validate_layer_ids(layer_ids: Optional[list[int]], num_layers: int) -> list[int]:
+    """Zero-based transformer block indices; embeddings are not selectable layers."""
+    indices = list(range(num_layers)) if layer_ids is None else list(layer_ids)
+    if not indices or any(isinstance(index, bool) or not isinstance(index, Integral)
+                          or not 0 <= index < num_layers for index in indices):
+        raise ValueError(f"Layer indices must be integers in [0, {num_layers - 1}]")
+    if len(set(indices)) != len(indices):
+        raise ValueError("Layer indices must not contain duplicates")
+    return [int(index) for index in indices]
 
 
 @dataclass
@@ -120,7 +136,7 @@ class ExtractionResult:
         """
         state = self.resolve_anchor(anchor)
         if layer_ids is not None:
-            indices = [min(max(0, l), state.shape[0] - 1) for l in layer_ids]
+            indices = validate_layer_ids(layer_ids, state.shape[0])
             return state[indices, :]
         return state
 
@@ -131,17 +147,35 @@ class ActivationExtractor:
         model: str,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         torch_dtype: torch.dtype = torch.bfloat16,
+        revision: Optional[str] = None,
+        token: Optional[str] = None,
     ):
         self.device = device
-        self.tokenizer = AutoTokenizer.from_pretrained(model)
+        local_model = Path(model).is_dir()
+        resolved_revision = (f"local-sha256:{file_revision(model)}" if local_model else
+                             HfApi().model_info(model, revision=revision, token=token).sha)
+        if not resolved_revision:
+            raise ValueError(f"Could not resolve model revision for {model}")
+        loading = {"token": token}
+        if not local_model:
+            loading["revision"] = resolved_revision
+        self.tokenizer = AutoTokenizer.from_pretrained(model, **loading)
         self.model = AutoModelForCausalLM.from_pretrained(
             model,
             torch_dtype=torch_dtype,
             device_map="auto" if device == "cuda" else None,
+            **loading,
         )
         if device != "cuda":
             self.model.to(self.device)
         self.model.eval()
+        self.generation_defaults = self.model.generation_config.to_dict()
+        self.num_layers = self.model.config.num_hidden_layers
+        self.metadata = {
+            "model_id": model, "model_revision": resolved_revision,
+            "tokenizer_revision": resolved_revision, "num_layers": self.num_layers,
+            "layer_indexing": "zero_based_transformer_blocks_excluding_embeddings",
+        }
 
     @torch.inference_mode()
     def step_forward(
@@ -171,6 +205,8 @@ class ActivationExtractor:
         completion_text = self.tokenizer.decode(completion_ids, skip_special_tokens=True)
 
         num_layers = len(gen_out.hidden_states[0]) - 1
+        if num_layers != self.num_layers:
+            raise ValueError("Extracted layer count differs from the selected model configuration")
 
         layer_tensors = []
         for l in range(1, num_layers + 1):

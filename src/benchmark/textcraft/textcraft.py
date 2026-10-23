@@ -15,6 +15,8 @@ import random
 import re
 from typing import Any, Optional
 
+from src.splits import file_revision
+
 from ..base import BaseBenchmark, StepObservation, TaskInstance
 from .crafting_tree import (
     ActionFailed,
@@ -215,6 +217,15 @@ class TextCraftBenchmark(BaseBenchmark):
         self.easy_first = easy_first
         self.balanced = balanced
 
+        self.source_namespace = "textcraft"
+        self.source_provenance = {
+            "kind": "generated", "generator": "textcraft",
+            "generator_revision": file_revision(__file__, Path(__file__).with_name("crafting_tree.py")),
+            "recipes_revision": file_revision(self.recipes_path),
+            "parameters": {"seed": seed, "min_depth": min_depth, "max_depth": max_depth,
+                           "max_distractors": max_distractors, "easy_first": easy_first, "balanced": balanced},
+        }
+
         self.crafting_tree = CraftingTree(self.recipes_path)
         self.parser = TextCraftActionParser()
 
@@ -305,8 +316,8 @@ class TextCraftBenchmark(BaseBenchmark):
 
             recipe_set = set(r.recipe_str for r in recipes)
             distractor_set = set(d.recipe_str for d in distractors if d.recipe_str not in recipe_set)
-            combined_recipes = list(recipe_set) + rng.sample(
-                list(distractor_set),
+            combined_recipes = sorted(recipe_set) + rng.sample(
+                sorted(distractor_set),
                 min(len(distractor_set), self.max_distractors),
             )
             rng.shuffle(combined_recipes)
@@ -337,8 +348,13 @@ class TextCraftBenchmark(BaseBenchmark):
 
         return tasks
 
-    def list_tasks(self, split: str = "train") -> list[TaskInstance]:
-        return self.task_list
+    def list_tasks(self, split: Optional[str] = None) -> list[TaskInstance]:
+        return self.select_source_tasks(self.task_list, split)
+
+    def get_group_key(self, task: TaskInstance, grouping: str = "task") -> str:
+        if grouping == "crafting_goal":
+            return task.info["goal_item_id"]
+        return super().get_group_key(task, grouping)
 
     def reset(self, task: TaskInstance, seed: Optional[int] = None) -> StepObservation:
         self.active_task_id = task.task_id

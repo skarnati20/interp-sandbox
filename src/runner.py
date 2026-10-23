@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional
+import json
+import math
 import uuid
 
-from src.activations import ActivationExtractor, ExtractionResult
+from src.activations import ActivationExtractor, ExtractionResult, validate_layer_ids
 from src.benchmark.base import BaseBenchmark, StepObservation, TaskInstance
 from src.store import ShardWriter, save_run_summary
+from src.splits import apply_split_manifest, content_hash, load_split_manifest, save_split_manifest
 
 
 class Runner:
@@ -25,26 +28,109 @@ class Runner:
         anchors: Optional[list[str]] = None,
         shard_size: int = 2000,
         verbose: bool = True,
+        split_manifest: Optional[dict | str | Path] = None,
     ):
         self.extractor = extractor
         self.benchmark = benchmark
         self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.layer_ids = layer_ids
+        self._require_empty_output()
+        self.layer_ids = validate_layer_ids(layer_ids, extractor.num_layers)
         self.anchors = anchors or ["post_gen", "pre_gen"]
         self.verbose = verbose
+        self.split_manifest = (load_split_manifest(split_manifest)
+                               if isinstance(split_manifest, (str, Path)) else split_manifest)
+        self.grouping = self.split_manifest["grouping"] if self.split_manifest is not None else "task"
+        catalog = benchmark.task_catalog(self.grouping)
+        if self.split_manifest is not None:
+            apply_split_manifest(catalog, self.split_manifest)
+        self.model_metadata = getattr(extractor, "metadata", {"model_id": "unknown", "model_revision": None})
+        self._base_run_metadata = {
+            **self.model_metadata, "layer_ids": self.layer_ids, "anchors": self.anchors,
+            "manifest_id": self.split_manifest["manifest_id"] if self.split_manifest is not None else None,
+            "sources": list({content_hash(record.provenance): record.provenance for record in catalog}.values()),
+        }
+        self._base_run_metadata["benchmark_settings"] = benchmark.collection_settings()
+        self.shard_size = shard_size
+        self.shard_writer = None
+        self._run_started = False
 
-        # Sharded storage writer for features
+    def _require_empty_output(self) -> None:
+        self.validate_output_directory(self.output_dir)
+
+    @staticmethod
+    def validate_output_directory(output_dir: str | Path) -> None:
+        """Collectors can reject occupied outputs before loading a model or source."""
+        directory = Path(output_dir)
+        if directory.is_symlink() or (directory.exists() and (
+            not directory.is_dir() or any(directory.iterdir())
+        )):
+            raise FileExistsError(
+                f"Collection output must be a new or empty directory: {directory}. "
+                "Resume is not supported; use a fresh output directory."
+            )
+
+    def _start_collection(self, tasks, *, mode, source_split, max_tasks, max_steps,
+                          n_rollouts, temperature, max_new_tokens, rollout_k=None):
+        if self._run_started:
+            raise RuntimeError("This Runner has already started a collection; create a new Runner and output directory")
+        for name, value in (("max_steps", max_steps), ("n_rollouts", n_rollouts),
+                            ("max_new_tokens", max_new_tokens)):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
+        if not math.isfinite(temperature) or temperature < 0:
+            raise ValueError("temperature must be finite and nonnegative")
+        self._require_empty_output()
+        records = [self.benchmark.task_record(task, self.grouping) for task in tasks]
+        if self.split_manifest is not None:
+            apply_split_manifest(records, self.split_manifest)
+        effective_temp = temperature if temperature > 0 or n_rollouts == 1 else 0.7
+        self.run_metadata = {
+            **self._base_run_metadata,
+            "mode": mode, "status": "running", "completed_episodes": 0,
+            "n_rollouts": n_rollouts, "max_steps": max_steps,
+            "generation": {
+                "model_defaults": getattr(self.extractor, "generation_defaults", {}),
+                "requested_temperature": temperature, "effective_temperature": effective_temp,
+                "do_sample": effective_temp > 0, "max_new_tokens": max_new_tokens,
+                "return_dict_in_generate": True, "output_hidden_states": True,
+            },
+            "task_selection": {
+                "source_split": source_split, "max_tasks": max_tasks,
+                "selected_task_count": len(tasks),
+                "tasks": [{"task_uid": record.task_uid, "task_id": task.task_id,
+                           "source_task_id": record.source_task_id or record.task_id,
+                           "source_split": record.source_split, "task_idx": task.info.get("task_idx", i)}
+                          for i, (task, record) in enumerate(zip(tasks, records))],
+            },
+        }
+        if rollout_k is not None:
+            self.run_metadata["rollout_k"] = rollout_k
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        # An exclusive metadata file claims this output even if two runners
+        # were constructed while it was empty. No matching-metadata overwrite.
+        with (self.output_dir / "run_metadata.json").open("x", encoding="utf-8") as fp:
+            json.dump(self.run_metadata, fp, indent=2, sort_keys=True)
+            fp.write("\n")
+        self._run_started = True
+        if self.split_manifest is not None:
+            save_split_manifest(self.split_manifest, self.output_dir / "split_manifest.json")
         self.features_dir = self.output_dir / "features"
-        self.shard_writer = ShardWriter(
-            output_dir=self.features_dir,
-            shard_size=shard_size,
-            layer_ids=layer_ids,
+        self.shard_writer = ShardWriter(self.features_dir, shard_size=self.shard_size, layer_ids=self.layer_ids)
+        return effective_temp
+
+    def _finish_collection(self, results: list[dict], complete: bool) -> None:
+        self.shard_writer.close()
+        save_run_summary(self.output_dir / "run_summary.parquet", results)
+        self.run_metadata.update(status="complete" if complete else "failed", completed_episodes=len(results))
+        (self.output_dir / "run_metadata.json").write_text(
+            json.dumps(self.run_metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
 
-    def get_tasks(self, split: str = "train", limit: Optional[int] = None) -> list[TaskInstance]:
+    def get_tasks(self, split: Optional[str] = None, limit: Optional[int] = None) -> list[TaskInstance]:
+        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 0):
+            raise ValueError("Task limit must be a nonnegative integer")
         tasks = self.benchmark.list_tasks(split=split)
-        return tasks[:limit] if limit else tasks
+        return tasks[:limit] if limit is not None else tasks
 
     def run_task(
         self,
@@ -54,9 +140,48 @@ class Runner:
         task_idx: Optional[int] = None,
         temperature: float = 0.0,
         episode_id: Optional[str] = None,
+        max_new_tokens: int = 512,
+    ) -> dict:
+        """Collect one episode into a fresh output, with the same protection as a batch."""
+        self._start_collection([task], mode="single_task", source_split=task.source_split,
+                               max_tasks=1, max_steps=max_steps, n_rollouts=1,
+                               temperature=temperature, max_new_tokens=max_new_tokens, rollout_k=rollout_k)
+        results = []
+        complete = False
+        try:
+            result = self._run_task(task, max_steps=max_steps, rollout_k=rollout_k, task_idx=task_idx,
+                                    temperature=temperature, episode_id=episode_id, max_new_tokens=max_new_tokens)
+            results.append(result)
+            complete = True
+            return result
+        finally:
+            self._finish_collection(results, complete)
+
+    def _run_task(
+        self,
+        task: TaskInstance,
+        max_steps: int = 10,
+        rollout_k: int = 0,
+        task_idx: Optional[int] = None,
+        temperature: float = 0.0,
+        episode_id: Optional[str] = None,
+        max_new_tokens: int = 512,
     ) -> dict:
         t_idx = task_idx if task_idx is not None else task.info.get("task_idx", 0)
         episode_id = episode_id or f"{task.task_id}_k{rollout_k}_{uuid.uuid4().hex[:6]}"
+        record = self.benchmark.task_record(task, self.grouping)
+        if self.split_manifest is not None:
+            task_metadata = apply_split_manifest([record], self.split_manifest)[0]
+        else:
+            task_metadata = {
+                "task_uid": record.task_uid, "namespace": record.namespace, "group_id": record.group_id,
+                "source_task_id": record.source_task_id or record.task_id,
+                "source_split": record.source_split, "source_provenance": record.provenance,
+                "probe_split": None, "manifest_id": None,
+            }
+        task_metadata["grouping"] = self.grouping
+        task_metadata.update(self.model_metadata)
+        task_metadata["layer_ids"] = self.layer_ids
 
         try:
             # 1. Reset benchmark environment
@@ -77,7 +202,7 @@ class Runner:
             for step_idx in range(max_steps):
                 # Run forward pass & extract hidden states
                 result: ExtractionResult = self.extractor.step_forward(
-                    messages, temperature=temperature
+                    messages, temperature=temperature, max_new_tokens=max_new_tokens
                 )
                 action_text = result.completion_text.strip()
 
@@ -89,6 +214,7 @@ class Runner:
                     print(f"    [Step {step_idx + 1}] Action: '{first_line[:70]}' -> Obs: '{obs.observation_text[:70]}'")
 
                 step_meta = {
+                    **task_metadata,
                     "episode_id": episode_id,
                     "task_id": task.task_id,
                     "task_idx": t_idx,
@@ -129,6 +255,7 @@ class Runner:
                     self.shard_writer.add_step(feat_vec, anchor_meta)
 
             return {
+                **task_metadata,
                 "episode_id": episode_id,
                 "task_id": task.task_id,
                 "task_idx": t_idx,
@@ -144,13 +271,18 @@ class Runner:
 
     def run_benchmark(
         self,
-        split: str = "train",
+        split: Optional[str] = None,
         max_tasks: Optional[int] = None,
         max_steps: int = 10,
         n_rollouts: int = 1,
         temperature: float = 0.0,
+        max_new_tokens: int = 512,
     ) -> list[dict]:
         tasks = self.get_tasks(split=split, limit=max_tasks)
+        effective_temp = self._start_collection(
+            tasks, mode="benchmark", source_split=split, max_tasks=max_tasks, max_steps=max_steps,
+            n_rollouts=n_rollouts, temperature=temperature, max_new_tokens=max_new_tokens,
+        )
         results = []
         total_episodes = len(tasks) * n_rollouts
 
@@ -158,37 +290,32 @@ class Runner:
             f"Starting benchmark run: {len(tasks)} tasks x {n_rollouts} rollouts = {total_episodes} episodes..."
         )
         ep_count = 0
-        for i, task in enumerate(tasks):
-            task_idx = task.info.get("task_idx", i)
-            for k in range(n_rollouts):
-                ep_count += 1
-                effective_temp = temperature if (temperature > 0.0 or n_rollouts == 1) else 0.7
-                print(
-                    f"[{ep_count}/{total_episodes}] Running task {i+1}/{len(tasks)} "
-                    f"({task.task_id}) [Rollout k={k}, temp={effective_temp}]..."
-                )
-                result = self.run_task(
-                    task=task,
-                    max_steps=max_steps,
-                    rollout_k=k,
-                    task_idx=task_idx,
-                    temperature=effective_temp,
-                )
-                results.append(result)
-                status = "SUCCESS" if result["is_success"] else "FAILED"
-                print(
-                    f"  Result: {status} (Steps: {result['num_steps']}, Reward: {result['total_reward']})"
-                )
+        complete = False
+        try:
+            for i, task in enumerate(tasks):
+                task_idx = task.info.get("task_idx", i)
+                for k in range(n_rollouts):
+                    ep_count += 1
+                    print(
+                        f"[{ep_count}/{total_episodes}] Running task {i+1}/{len(tasks)} "
+                        f"({task.task_id}) [Rollout k={k}, temp={effective_temp}]..."
+                    )
+                    result = self._run_task(
+                        task=task, max_steps=max_steps, rollout_k=k, task_idx=task_idx,
+                        temperature=effective_temp, max_new_tokens=max_new_tokens,
+                    )
+                    results.append(result)
+                    status = "SUCCESS" if result["is_success"] else "FAILED"
+                    print(f"  Result: {status} (Steps: {result['num_steps']}, Reward: {result['total_reward']})")
+            complete = True
+        finally:
+            # Keep completed episodes readable even when a later episode fails.
+            self._finish_collection(results, complete)
 
-        # Finalize and flush all feature shards to disk
-        self.shard_writer.close()
-
-        # Save run summary Parquet
         summary_path = self.output_dir / "run_summary.parquet"
-        save_run_summary(summary_path, results)
         success_count = sum(1 for r in results if r["is_success"])
         print(
-            f"\nBenchmark Complete! Success Rate: {(success_count / len(results)) * 100:.1f}% "
+            f"\nBenchmark Complete! Success Rate: {(success_count / len(results)) * 100 if results else 0:.1f}% "
             f"({success_count}/{len(results)})"
         )
         print(f"Saved feature shards to {self.features_dir}")
