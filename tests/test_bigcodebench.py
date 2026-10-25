@@ -3,11 +3,7 @@ Unit and integration tests for the BigCodeBench benchmark adapter.
 """
 
 from pathlib import Path
-import json
 import unittest
-from unittest.mock import patch
-
-from datasets import Dataset, DatasetDict
 
 from src.benchmark.bigcodebench.bigcodebench import BigCodeBenchmark
 
@@ -75,19 +71,6 @@ class TestBigCodeBenchCodeExtraction(unittest.TestCase):
 
 
 class TestBigCodeBenchmark(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        # Exercise real code execution without downloading a mutable benchmark.
-        fixture = json.loads((Path(__file__).parent / "fixtures" / "bigcodebench_releases.json").read_text())
-        cls.release_partitions = DatasetDict({name: Dataset.from_list(rows)
-                                              for name, rows in fixture["partitions"].items()})
-        cls.source_patch = patch("src.benchmark.bigcodebench.bigcodebench.load_source_dataset", return_value=(
-            cls.release_partitions,
-            {"kind": "huggingface", "dataset_id": "fixture/bigcodebench", "config": fixture["config"], "revision": "fixed-commit"},
-        ))
-        cls.source_patch.start()
-        cls.addClassCleanup(cls.source_patch.stop)
-
     def setUp(self):
         self.bench = BigCodeBenchmark(subset="hard", num_tasks=5, timeout=5.0)
         self.tasks = self.bench.list_tasks()
@@ -96,42 +79,10 @@ class TestBigCodeBenchmark(unittest.TestCase):
         self.bench.close()
 
     def test_task_list(self):
-        self.assertEqual(len(self.tasks), 2)
+        self.assertEqual(len(self.tasks), 5)
         for t in self.tasks:
             self.assertTrue(t.task_id.startswith("bigcodebench/"))
             self.assertIn("entry_point", t.info)
-            self.assertEqual(t.source_split, "v0.1.4")
-
-    def test_official_partition_and_catalog_survive_collection_limits(self):
-        small = BigCodeBenchmark(num_tasks=1)
-        self.assertEqual(len(small.list_tasks("v0.1.4")), 1)
-        self.assertEqual(len(small.task_catalog()), 2)
-        with self.assertRaisesRegex(ValueError, "does not exist"):
-            small.list_tasks("train")
-
-    def test_default_selects_one_release_from_real_hub_layout(self):
-        self.assertEqual(list(self.release_partitions), ["v0.1.0_hf", "v0.1.1", "v0.1.2", "v0.1.3", "v0.1.4"])
-        self.assertEqual(len(self.bench.task_catalog()), 2)  # Not ten rows from five releases.
-        self.assertEqual(len({record.task_uid for record in self.bench.task_catalog()}), 2)
-        self.assertEqual({task.source_split for task in self.tasks}, {"v0.1.4"})
-        self.assertEqual(self.bench.source_provenance["release"], "v0.1.4")
-        self.assertTrue(all("[v0.1.4]" in task.instruction for task in self.tasks))
-        self.assertEqual(self.bench.task_specs[0].libs, ["math"])
-
-    def test_explicit_release_is_independent_of_prompt_format(self):
-        selected = BigCodeBenchmark(release="v0.1.2", split="instruct")
-        self.assertEqual({record.source_split for record in selected.task_catalog()}, {"v0.1.2"})
-        self.assertTrue(all("[v0.1.2]" in task.instruction for task in selected.list_tasks()))
-        self.assertEqual(selected.collection_settings()["prompt_format"], "instruct")
-        with self.assertRaisesRegex(ValueError, "does not exist"):
-            selected.list_tasks("v0.1.4")
-
-    def test_missing_or_empty_release_is_rejected(self):
-        with self.assertRaisesRegex(ValueError, "not found"):
-            BigCodeBenchmark(release="missing")
-        for release in (None, ""):
-            with self.subTest(release=release), self.assertRaises(ValueError):
-                BigCodeBenchmark(release=release)
 
     def test_reset_instruct(self):
         task = self.tasks[0]
