@@ -17,8 +17,6 @@ import tempfile
 from typing import Any, Optional
 
 from ..base import BaseBenchmark, StepObservation, TaskInstance
-from ..huggingface import load_source_dataset
-from src.splits import namespaced_id
 
 
 @dataclass
@@ -30,7 +28,6 @@ class BigCodeBenchTaskSpec:
     code_prompt: str
     canonical_solution: str
     test: str
-    source_split: Optional[str] = None
     doc_struct: str = ""
     libs: list[str] = field(default_factory=list)
 
@@ -41,8 +38,6 @@ class BigCodeBenchmark(BaseBenchmark):
     Executes Python solutions against unittest test harnesses in isolated subprocesses.
     Loads tasks exclusively from the official HuggingFace Hub dataset.
     """
-
-    DEFAULT_RELEASE = "v0.1.4"
 
     DEFAULT_SYSTEM_PROMPT = (
         "You are an expert Python software engineer.\n"
@@ -57,25 +52,18 @@ class BigCodeBenchmark(BaseBenchmark):
         num_tasks: Optional[int] = None,
         seed: int = 42,
         timeout: float = 15.0,
-        dataset_config: Optional[str] = None,
-        dataset_revision: Optional[str] = None,
-        token: Optional[str] = None,
-        release: str = DEFAULT_RELEASE,
     ):
         self.subset = subset.lower()
         self.split = split.lower()
         self.num_tasks = num_tasks
         self.seed = seed
         self.timeout = timeout
-        self.dataset_config = dataset_config
-        self.dataset_revision = dataset_revision
-        self.token = token
-        if not isinstance(release, str) or not release:
-            raise ValueError("Select one BigCodeBench release, e.g. v0.1.4")
-        self.release = release
 
         # Load task specs exclusively from HuggingFace
         self.task_specs = self.load_task_specs()
+        if self.num_tasks is not None:
+            self.task_specs = self.task_specs[: self.num_tasks]
+
         self.tasks: list[TaskInstance] = self.create_task_instances()
 
         # Active episode state
@@ -114,33 +102,44 @@ class BigCodeBenchmark(BaseBenchmark):
         return code.strip()
 
     def load_task_specs(self) -> list[BigCodeBenchTaskSpec]:
-        """Load one release without combining alternate versions of its tasks."""
+        """Loads tasks exclusively from HuggingFace Hub."""
         repo_id = "bigcode/bigcodebench-hard" if self.subset == "hard" else "bigcode/bigcodebench"
-        partitions, self.source_provenance = load_source_dataset(
-            repo_id, config=self.dataset_config, revision=self.dataset_revision, token=self.token,
-            source_split=self.release,
-        )
-        if self.release not in partitions:
-            raise ValueError(f"BigCodeBench release {self.release!r} not found; available: {list(partitions)}")
-        self.source_provenance = {**self.source_provenance, "release": self.release}
-        self.source_namespace = namespaced_id(repo_id, self.source_provenance["config"] or "default")
-        specs = []
-        for source_split, partition in [(self.release, partitions[self.release])]:
-            for row in partition:
-                libs = row.get("libs", [])
-                if isinstance(libs, str):
+        try:
+            from huggingface_hub import hf_hub_download
+            import pandas as pd
+
+            parquet_filename = "data/v0.1.2-00000-of-00001.parquet"
+            fpath = hf_hub_download(repo_id=repo_id, filename=parquet_filename, repo_type="dataset")
+            df = pd.read_parquet(fpath)
+            specs = []
+            for row_idx, row in df.iterrows():
+                libs_val = row.get("libs", [])
+                if isinstance(libs_val, str):
                     try:
-                        libs = json.loads(libs.replace("'", '"'))
-                    except ValueError:
-                        libs = [lib.strip() for lib in libs.strip("[]").split(",") if lib.strip()]
-                specs.append(BigCodeBenchTaskSpec(
-                    task_id=str(row["task_id"]), entry_point=str(row["entry_point"]),
-                    complete_prompt=str(row["complete_prompt"]), instruct_prompt=str(row["instruct_prompt"]),
-                    code_prompt=str(row["code_prompt"]), canonical_solution=str(row["canonical_solution"]),
-                    test=str(row["test"]), source_split=source_split,
-                    doc_struct=str(row.get("doc_struct", "")), libs=libs if isinstance(libs, list) else [],
-                ))
-        return specs
+                        libs_val = json.loads(libs_val.replace("'", '"'))
+                    except Exception:
+                        libs_val = [lib.strip() for lib in libs_val.strip("[]").split(",") if lib.strip()]
+                elif not isinstance(libs_val, list):
+                    libs_val = []
+
+                specs.append(
+                    BigCodeBenchTaskSpec(
+                        task_id=str(row["task_id"]),
+                        entry_point=str(row["entry_point"]),
+                        complete_prompt=str(row["complete_prompt"]),
+                        instruct_prompt=str(row["instruct_prompt"]),
+                        code_prompt=str(row["code_prompt"]),
+                        canonical_solution=str(row["canonical_solution"]),
+                        test=str(row["test"]),
+                        doc_struct=str(row.get("doc_struct", "")),
+                        libs=libs_val,
+                    )
+                )
+            return specs
+        except Exception as err:
+            raise RuntimeError(
+                f"Could not load BigCodeBench dataset from {repo_id}: {err}"
+            )
 
     def create_task_instances(self) -> list[TaskInstance]:
         instances = []
@@ -150,14 +149,13 @@ class BigCodeBenchmark(BaseBenchmark):
             else:
                 instruction = f"Complete the Python function '{spec.entry_point}' according to its specification."
 
-            task_id = f"bigcodebench/{spec.task_id.split('/')[-1]}"
+            task_id = f"bigcodebench/{spec.task_id.split('/')[-1] if '/' in spec.task_id else spec.task_id}"
 
             instances.append(
                 TaskInstance(
                     task_id=task_id,
                     instruction=instruction,
                     system_prompt=self.DEFAULT_SYSTEM_PROMPT,
-                    source_split=spec.source_split,
                     info={
                         "task_idx": i,
                         "raw_task_id": spec.task_id,
@@ -170,17 +168,8 @@ class BigCodeBenchmark(BaseBenchmark):
             )
         return instances
 
-    def list_tasks(self, split: Optional[str] = None) -> list[TaskInstance]:
-        tasks = self.select_source_tasks(self.tasks, split)
-        return tasks[: self.num_tasks] if self.num_tasks is not None else tasks
-
-    def task_catalog(self, grouping: str = "task"):
-        # A collection limit must not shrink the universe used to create a manifest.
-        return [self.task_record(task, grouping) for task in self.tasks]
-
-    def collection_settings(self) -> dict:
-        return {"release": self.release, "subset": self.subset, "prompt_format": self.split,
-                "evaluation_timeout": self.timeout}
+    def list_tasks(self, split: str = "train") -> list[TaskInstance]:
+        return self.tasks
 
     def reset(self, task: TaskInstance, seed: Optional[int] = None) -> StepObservation:
         self.close()

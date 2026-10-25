@@ -4,9 +4,6 @@ from dataclasses import dataclass
 import re
 import time
 from typing import Any, Optional
-from importlib.metadata import version
-
-from src.splits import file_revision
 
 import gymnasium
 import numpy as np
@@ -226,12 +223,6 @@ class MiniWoBBenchmark(BaseBenchmark):
         self.seeds = seeds or [42]
         self.action_delay = action_delay
         self.headless = headless
-        self.source_namespace = "miniwob"
-        self.source_provenance = {
-            "kind": "generated", "generator": "miniwob",
-            "generator_revision": file_revision(__file__), "environment_version": version("miniwob"),
-            "parameters": {"env_names": self.env_names, "seeds": self.seeds},
-        }
         self.formatter = MiniWoBDomFormatter()
         self.parser = MiniWoBActionParser()
 
@@ -240,7 +231,7 @@ class MiniWoBBenchmark(BaseBenchmark):
         self._last_raw_obs: Optional[dict] = None
         self._last_reward: float = 0.0
 
-    def list_tasks(self, split: Optional[str] = None) -> list[TaskInstance]:
+    def list_tasks(self, split: str = "train") -> list[TaskInstance]:
         tasks = []
         task_idx = 0
         for seed in self.seeds:
@@ -259,7 +250,7 @@ class MiniWoBBenchmark(BaseBenchmark):
                 task_idx += 1
             if self.num_tasks is not None and len(tasks) >= self.num_tasks:
                 break
-        return self.select_source_tasks(tasks, split)
+        return tasks
 
     def reset(self, task: TaskInstance, seed: Optional[int] = None) -> StepObservation:
         self.close()
