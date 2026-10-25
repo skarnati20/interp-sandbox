@@ -9,7 +9,7 @@ import uuid
 from src.activations import ActivationExtractor, ExtractionResult, validate_layer_ids
 from src.benchmark.base import BaseBenchmark, StepObservation, TaskInstance
 from src.store import ShardWriter, save_run_summary
-from src.splits import apply_split_manifest, content_hash, load_split_manifest, save_split_manifest
+from src.splits import content_hash
 
 
 class Runner:
@@ -28,7 +28,6 @@ class Runner:
         anchors: Optional[list[str]] = None,
         shard_size: int = 2000,
         verbose: bool = True,
-        split_manifest: Optional[dict | str | Path] = None,
     ):
         self.extractor = extractor
         self.benchmark = benchmark
@@ -37,16 +36,10 @@ class Runner:
         self.layer_ids = validate_layer_ids(layer_ids, extractor.num_layers)
         self.anchors = anchors or ["post_gen", "pre_gen"]
         self.verbose = verbose
-        self.split_manifest = (load_split_manifest(split_manifest)
-                               if isinstance(split_manifest, (str, Path)) else split_manifest)
-        self.grouping = self.split_manifest["grouping"] if self.split_manifest is not None else "task"
-        catalog = benchmark.task_catalog(self.grouping)
-        if self.split_manifest is not None:
-            apply_split_manifest(catalog, self.split_manifest)
+        catalog = benchmark.task_catalog()
         self.model_metadata = getattr(extractor, "metadata", {"model_id": "unknown", "model_revision": None})
         self._base_run_metadata = {
             **self.model_metadata, "layer_ids": self.layer_ids, "anchors": self.anchors,
-            "manifest_id": self.split_manifest["manifest_id"] if self.split_manifest is not None else None,
             "sources": list({content_hash(record.provenance): record.provenance for record in catalog}.values()),
         }
         self._base_run_metadata["benchmark_settings"] = benchmark.collection_settings()
@@ -80,9 +73,7 @@ class Runner:
         if not math.isfinite(temperature) or temperature < 0:
             raise ValueError("temperature must be finite and nonnegative")
         self._require_empty_output()
-        records = [self.benchmark.task_record(task, self.grouping) for task in tasks]
-        if self.split_manifest is not None:
-            apply_split_manifest(records, self.split_manifest)
+        records = [self.benchmark.task_record(task) for task in tasks]
         effective_temp = temperature if temperature > 0 or n_rollouts == 1 else 0.7
         self.run_metadata = {
             **self._base_run_metadata,
@@ -112,8 +103,6 @@ class Runner:
             json.dump(self.run_metadata, fp, indent=2, sort_keys=True)
             fp.write("\n")
         self._run_started = True
-        if self.split_manifest is not None:
-            save_split_manifest(self.split_manifest, self.output_dir / "split_manifest.json")
         self.features_dir = self.output_dir / "features"
         self.shard_writer = ShardWriter(self.features_dir, shard_size=self.shard_size, layer_ids=self.layer_ids)
         return effective_temp
@@ -169,17 +158,14 @@ class Runner:
     ) -> dict:
         t_idx = task_idx if task_idx is not None else task.info.get("task_idx", 0)
         episode_id = episode_id or f"{task.task_id}_k{rollout_k}_{uuid.uuid4().hex[:6]}"
-        record = self.benchmark.task_record(task, self.grouping)
-        if self.split_manifest is not None:
-            task_metadata = apply_split_manifest([record], self.split_manifest)[0]
-        else:
-            task_metadata = {
-                "task_uid": record.task_uid, "namespace": record.namespace, "group_id": record.group_id,
-                "source_task_id": record.source_task_id or record.task_id,
-                "source_split": record.source_split, "source_provenance": record.provenance,
-                "probe_split": None, "manifest_id": None,
-            }
-        task_metadata["grouping"] = self.grouping
+        record = self.benchmark.task_record(task)
+        task_metadata = {
+            "task_uid": record.task_uid, "namespace": record.namespace, "group_id": record.group_id,
+            "source_task_id": record.source_task_id or record.task_id,
+            "source_split": record.source_split, "source_provenance": record.provenance,
+            "probe_split": None, "manifest_id": None,
+        }
+        task_metadata["grouping"] = "task"
         task_metadata.update(self.model_metadata)
         task_metadata["layer_ids"] = self.layer_ids
 
@@ -320,5 +306,4 @@ class Runner:
         )
         print(f"Saved feature shards to {self.features_dir}")
         print(f"Saved run summary to {summary_path}")
-
         return results

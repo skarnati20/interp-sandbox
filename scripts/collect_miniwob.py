@@ -87,7 +87,6 @@ def parse_args():
         help="Directory to persist features and summaries",
     )
     parser.add_argument("--model_revision", default=None, help="Model revision to resolve and pin")
-    parser.add_argument("--split_manifest", default=None, help="Existing task-to-probe-split manifest JSON")
     parser.add_argument("--source_split", default=None, help="Exact official source partition (default: all)")
     parser.add_argument("--max_new_tokens", type=int, default=512, help="Maximum generated tokens per decision (default: 512)")
     return parser.parse_args()
@@ -134,7 +133,6 @@ def main():
         output_dir=output_path,
         layer_ids=args.layers,
         anchors=args.anchors,
-        split_manifest=args.split_manifest,
     )
 
     results = runner.run_benchmark(

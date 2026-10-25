@@ -112,21 +112,20 @@ class TestCollectionMetadata(unittest.TestCase):
             for model in ("model-a", "model-b"):
                 output = Path(directory) / model
                 runner = Runner(FixtureExtractor(model), benchmark, output_dir=output,
-                                layer_ids=[1, 3], split_manifest=manifest, verbose=False)
+                                layer_ids=[1, 3], verbose=False)
                 runner.run_benchmark(max_tasks=1 if model == "model-a" else 4, max_steps=1)
                 rows = load_activation_dataset(output, cache_dir=Path(directory) / "cache")
-                for row in rows:
+                annotated = apply_activation_manifest(rows, manifest, task_catalog=benchmark.task_catalog())
+                for row in annotated:
                     entry = manifest["tasks"][row["task_uid"]]
                     self.assertEqual(row["probe_split"], entry["probe_split"])
                     self.assertEqual(row["layer_ids"], [1, 3])
                     self.assertEqual(row["model_revision"], "model-commit")
                     self.assertIsNone(row["source_split"])
-                splits = split_activation_dataset(rows, manifest)
+                splits = split_activation_dataset(annotated, manifest)
                 self.assertEqual(sum(len(partition) for partition in splits.values()), len(rows))
                 metadata = json.loads((output / "run_metadata.json").read_text())
                 self.assertEqual(metadata["layer_ids"], [1, 3])
-                self.assertEqual(metadata["manifest_id"], manifest["manifest_id"])
-                self.assertTrue((output / "split_manifest.json").exists())
 
     def test_invalid_model_layers_fail_before_collection(self):
         with tempfile.TemporaryDirectory() as directory, self.assertRaises(ValueError):
@@ -179,7 +178,7 @@ class TestCollectionMetadata(unittest.TestCase):
             self.assertEqual(self.snapshot(directory), before)
 
     def test_orphan_outputs_and_two_prepared_runners_are_protected(self):
-        for filename in ("run_metadata.json", "features/feat.shard9.npz", "run_summary.parquet", "split_manifest.json"):
+        for filename in ("run_metadata.json", "features/feat.shard9.npz", "run_summary.parquet"):
             with self.subTest(filename=filename), tempfile.TemporaryDirectory() as directory:
                 path = Path(directory) / filename
                 path.parent.mkdir(parents=True, exist_ok=True)
