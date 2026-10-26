@@ -192,3 +192,49 @@ class ActivationExtractor:
             prompt_tokens=prompt_len,
             completion_tokens=num_completion_hidden_states,
         )
+
+    @torch.inference_mode()
+    def step_forward_completion(
+        self,
+        messages: list[dict],
+        completion_text: str,
+    ) -> ExtractionResult:
+        """
+        Executes a single forward pass over pre-existing messages and completion (teacher-forcing),
+        extracting residual stream activations without autoregressive generation.
+        """
+        prompt_text = self.tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        prompt_inputs = self.tokenizer(prompt_text, return_tensors="pt")
+        prompt_len = prompt_inputs.input_ids.shape[1]
+
+        completion_inputs = self.tokenizer(
+            completion_text, return_tensors="pt", add_special_tokens=False
+        )
+        completion_len = completion_inputs.input_ids.shape[1]
+
+        full_input_ids = torch.cat(
+            [prompt_inputs.input_ids, completion_inputs.input_ids], dim=1
+        ).to(self.device)
+        attention_mask = torch.ones_like(full_input_ids).to(self.device)
+
+        out = self.model(
+            input_ids=full_input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+        )
+
+        num_layers = len(out.hidden_states) - 1
+        layer_tensors = [
+            out.hidden_states[l][0].to(torch.float16).cpu()
+            for l in range(1, num_layers + 1)
+        ]
+        full_hidden_states = torch.stack(layer_tensors)
+
+        return ExtractionResult(
+            completion_text=completion_text,
+            hidden_states=full_hidden_states,
+            prompt_tokens=prompt_len,
+            completion_tokens=completion_len,
+        )
