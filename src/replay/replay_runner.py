@@ -78,9 +78,11 @@ class ReplayRunner:
                 prompt_messages = chat_messages
                 recorded_action = turn.action_text or ""
 
-            # Extract residual-stream activations via teacher-forcing
+            # Extract residual-stream activations via teacher-forcing (only requested layers)
             result: ExtractionResult = self.extractor.step_forward_completion(
-                prompt_messages, completion_text=recorded_action
+                prompt_messages,
+                completion_text=recorded_action,
+                layer_ids=self.layer_ids,
             )
 
             if self.verbose:
@@ -114,7 +116,7 @@ class ReplayRunner:
             for anchor in self.anchors:
                 anchor_meta = dict(step_meta)
                 anchor_meta["anchor"] = anchor
-                feat_vec = result.get_anchor_state(anchor=anchor, layer_ids=self.layer_ids)
+                feat_vec = result.get_anchor_state(anchor=anchor)
                 self.shard_writer.add_step(feat_vec, anchor_meta)
 
             # Explicitly drop the result to free intermediate tensor memory immediately

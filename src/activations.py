@@ -228,6 +228,7 @@ class ActivationExtractor:
         self,
         messages: list[dict],
         completion_text: str,
+        layer_ids: Optional[list[int]] = None,
         max_seq_len: Optional[int] = None,
     ) -> ExtractionResult:
         """
@@ -266,9 +267,14 @@ class ActivationExtractor:
         )
 
         num_layers = len(out.hidden_states) - 1
+        if layer_ids is not None:
+            target_indices = [min(max(0, l + 1), num_layers) for l in layer_ids]
+        else:
+            target_indices = list(range(1, num_layers + 1))
+
         layer_tensors = [
-            out.hidden_states[l][0].to(torch.float16).cpu()
-            for l in range(1, num_layers + 1)
+            out.hidden_states[idx][0].to(torch.float16).cpu()
+            for idx in target_indices
         ]
         full_hidden_states = torch.stack(layer_tensors)
 
