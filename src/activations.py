@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 import re
 from typing import Optional
@@ -142,6 +143,49 @@ class ActivationExtractor:
         if device != "cuda":
             self.model.to(self.device)
         self.model.eval()
+
+    def get_layers(self):
+        """Returns the module list containing transformer decoder layers."""
+        if hasattr(self.model, "model") and hasattr(self.model.model, "layers"):
+            return self.model.model.layers
+        elif hasattr(self.model, "transformer") and hasattr(self.model.transformer, "h"):
+            return self.model.transformer.h
+        elif hasattr(self.model, "layers"):
+            return self.model.layers
+        raise AttributeError("Could not find transformer decoder layers on model.")
+
+    @contextmanager
+    def steer(
+        self,
+        layer_idx: int,
+        vector: torch.Tensor | np.ndarray,
+        coeff: float = 1.0,
+    ):
+        """
+        Context manager that attaches a residual-stream steering hook to layer `layer_idx`,
+        adding `coeff * vector` to hidden states during forward passes and generation.
+        """
+        layers = self.get_layers()
+        target_layer = layers[min(max(0, layer_idx), len(layers) - 1)]
+
+        if isinstance(vector, np.ndarray):
+            vec_tensor = torch.from_numpy(vector).to(self.device)
+        else:
+            vec_tensor = vector.to(self.device)
+
+        def hook_fn(module, input, output):
+            v = vec_tensor.to(dtype=output[0].dtype if isinstance(output, tuple) else output.dtype)
+            if isinstance(output, tuple):
+                steered = output[0] + (coeff * v)
+                return (steered,) + output[1:]
+            else:
+                return output + (coeff * v)
+
+        handle = target_layer.register_forward_hook(hook_fn)
+        try:
+            yield
+        finally:
+            handle.remove()
 
     @torch.inference_mode()
     def step_forward(

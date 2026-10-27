@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, Optional, Union
 import numpy as np
 
@@ -30,6 +31,17 @@ class Probe(ABC):
         If return_proba is True, returns predicted probabilities of success (class 1).
         If return_proba is False, returns binary predictions (0 or 1) based on threshold.
         """
+        pass
+
+    @abstractmethod
+    def save(self, path: str | Path) -> None:
+        """Saves the trained probe model to disk."""
+        pass
+
+    @classmethod
+    @abstractmethod
+    def load(cls, path: str | Path) -> Probe:
+        """Loads a trained probe model from disk."""
         pass
 
     def evaluate(self, eval_set: ActivationDataset) -> dict[str, float]:
