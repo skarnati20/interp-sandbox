@@ -4,7 +4,6 @@ from copy import deepcopy
 from dataclasses import dataclass
 import gzip
 import json
-import os
 from pathlib import Path
 import random
 import re
@@ -64,7 +63,7 @@ class CraftingTree:
     """
     Minecraft recipe dependency graph and dynamic crafting resolver.
     Faithfully implements the ADaPT (Prasad et al., 2023) TextCraft recipe system.
-    Loads from a single consolidated recipes.json (or fallback directory).
+    Loads from a single consolidated recipes.json.
     """
 
     def __init__(self, recipes_path: str | Path):
@@ -77,40 +76,25 @@ class CraftingTree:
         self.transitive_dependencies: dict[str, set[str]] = {}
         self.min_depth: dict[str, int] = {}
 
-        self._load_recipes(self.recipes_path)
+        self.load_recipes(self.recipes_path)
         self.clean_up_recipes()
 
-    def _load_recipes(self, path: Path) -> None:
-        if not path.exists():
-            raise FileNotFoundError(f"Recipes file or directory not found: {path}")
+    def load_recipes(self, path: Path) -> None:
+        if not path.is_file():
+            raise FileNotFoundError(f"Recipes file not found: {path}")
 
-        # Case 1: Single consolidated JSON or GZ file
-        if path.is_file():
-            if str(path).endswith(".gz"):
-                with gzip.open(path, "rt", encoding="utf-8") as fp:
-                    data = json.load(fp)
-            else:
-                with open(path, "r", encoding="utf-8") as fp:
-                    data = json.load(fp)
+        if str(path).endswith(".gz"):
+            with gzip.open(path, "rt", encoding="utf-8") as fp:
+                data = json.load(fp)
+        else:
+            with open(path, "r", encoding="utf-8") as fp:
+                data = json.load(fp)
 
-            recipe_list = list(data.values()) if isinstance(data, dict) else data
-            for recipe_details in recipe_list:
-                self._parse_recipe(recipe_details)
-            return
+        recipe_list = list(data.values()) if isinstance(data, dict) else data
+        for recipe_details in recipe_list:
+            self.parse_recipe(recipe_details)
 
-        # Case 2: Directory of individual JSON files
-        for f in os.listdir(path):
-            if not f.endswith(".json"):
-                continue
-            recipe_file = path / f
-            try:
-                with open(recipe_file, "r", encoding="utf-8") as fp:
-                    recipe_details = json.load(fp)
-                self._parse_recipe(recipe_details)
-            except Exception:
-                continue
-
-    def _parse_recipe(self, recipe_details: dict) -> None:
+    def parse_recipe(self, recipe_details: dict) -> None:
         input_items: list[ItemTagWithCount] = []
         recipe_type = recipe_details.get("type", "")
 
@@ -261,7 +245,7 @@ class CraftingTree:
             if input_tag == tag:
                 yield item_id
 
-    def _get_matching_target_recipes(self, target_id: str) -> list[Recipe]:
+    def get_matching_target_recipes(self, target_id: str) -> list[Recipe]:
         if target_id in self.itemid_recipes:
             return self.itemid_recipes[target_id]
         if target_id + "s" in self.itemid_recipes:
@@ -274,7 +258,7 @@ class CraftingTree:
 
     def craft(self, recipe: Recipe) -> Optional[ItemTagWithCount]:
         target_id = recipe.output_item.item_tag.item_id or ""
-        target_recipes = self._get_matching_target_recipes(target_id)
+        target_recipes = self.get_matching_target_recipes(target_id)
         if not target_recipes:
             return None
 
@@ -375,15 +359,15 @@ class CraftingTree:
             return self.min_depth[item_tag]
 
         if item_tag in self.itemid_recipes:
-            self.min_depth[item_tag] = self._get_min_depth_recipes(self.itemid_recipes[item_tag])
+            self.min_depth[item_tag] = self.get_min_depth_recipes(self.itemid_recipes[item_tag])
         elif item_tag in self.tag_recipes:
-            self.min_depth[item_tag] = self._get_min_depth_recipes(self.tag_recipes[item_tag])
+            self.min_depth[item_tag] = self.get_min_depth_recipes(self.tag_recipes[item_tag])
         else:
             self.min_depth[item_tag] = 0
 
         return self.min_depth[item_tag]
 
-    def _get_min_depth_recipes(self, recipes: list[Recipe]) -> int:
+    def get_min_depth_recipes(self, recipes: list[Recipe]) -> int:
         depths = []
         for recipe in recipes:
             recipe_depths = []
