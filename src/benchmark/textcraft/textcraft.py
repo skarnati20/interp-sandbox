@@ -167,9 +167,9 @@ class TextCraftBenchmark(BaseBenchmark):
     """
 
     DEFAULT_SYSTEM_PROMPT = (
-        "You are an agent playing Minecraft text crafting (TextCraft). "
+        "You are an agent playing Minecraft text crafting (TextCraft).\n"
         "At each turn, you can:\n"
-        "1. Obtain raw materials: 'get <count> <item>'\n"
+        "1. Obtain raw materials: 'get <count> <item>' (NOTE: you can only 'get' base raw materials like wood logs, sand, ores. Any item with a recipe must be crafted from ingredients, not obtained with 'get').\n"
         "2. Craft items: 'craft <count> <target> using <count> <item>, ...'\n"
         "3. Check inventory: 'inventory'\n"
         "Always respond with a single executable command."
@@ -378,12 +378,13 @@ class TextCraftBenchmark(BaseBenchmark):
             item_obj = self.item_str_to_obj(item_name)
             target_id = item_obj.item_id or item_obj.tag or ""
 
-            if (
-                self.crafting_tree.is_craftable(item_obj.name)
-                or self.crafting_tree.is_tag(target_id)
-                or not self.crafting_tree.is_valid_item(target_id)
-            ):
-                obs_text = f"Could not find {item_name}"
+            if self.crafting_tree.is_craftable(item_obj.name):
+                obs_text = (
+                    f"Could not find {item_name}. '{item_name}' is a crafted item; "
+                    f"you cannot 'get' it directly. You must get its ingredients and craft it."
+                )
+            elif self.crafting_tree.is_tag(target_id) or not self.crafting_tree.is_valid_item(target_id):
+                obs_text = f"Could not find {item_name}. '{item_name}' is not a valid raw material."
             else:
                 self.inventory[target_id] += count
                 obs_text = f"Got {count} {item_name}"
