@@ -64,7 +64,9 @@ class ReplayRunner:
         if max_steps is not None:
             turns = turns[:max_steps]
 
-        episode_steps: list[tuple[ExtractionResult, dict]] = []
+        n_turns = len(turns)
+        is_success = bool(trajectory.is_success)
+        success_int = trajectory.is_success
 
         for step_idx, turn in enumerate(turns):
             chat_messages = turn.to_chat_messages()
@@ -83,7 +85,7 @@ class ReplayRunner:
 
             if self.verbose:
                 first_line = recorded_action.split("\n")[0] if "\n" in recorded_action else recorded_action
-                print(f"    [Step {step_idx + 1}/{len(turns)}] Action: '{first_line[:70]}'")
+                print(f"    [Step {step_idx + 1}/{n_turns}] Action: '{first_line[:70]}'")
 
             step_meta = {
                 "episode_id": episode_id,
@@ -94,34 +96,29 @@ class ReplayRunner:
                 "action": recorded_action,
                 "recorded_action": recorded_action,
                 "reward": 0.0,
-                "is_done": (step_idx == len(turns) - 1),
+                "is_done": (step_idx == n_turns - 1),
                 "prompt_tokens": result.prompt_tokens,
                 "completion_tokens": result.completion_tokens,
+                "success": success_int,
+                "n_rounds": n_turns,
+                "hit_max_rounds": (
+                    max_steps is not None
+                    and n_turns >= max_steps
+                    and not is_success
+                ),
             }
             if "model_name" in trajectory.metadata:
                 step_meta["model_name"] = trajectory.metadata["model_name"]
 
-            episode_steps.append((result, step_meta))
-
-        # Ground-truth task success from trajectory
-        is_success = bool(trajectory.is_success)
-        success_int = trajectory.is_success
-
-        # Stream step activations to shard writer with ground-truth success attached
-        for result, meta in episode_steps:
-            meta["success"] = success_int
-            meta["n_rounds"] = len(episode_steps)
-            meta["hit_max_rounds"] = (
-                max_steps is not None
-                and len(episode_steps) >= max_steps
-                and not is_success
-            )
-
+            # Immediately stream anchor feature vectors to shard writer to prevent holding full hidden states in RAM
             for anchor in self.anchors:
-                anchor_meta = dict(meta)
+                anchor_meta = dict(step_meta)
                 anchor_meta["anchor"] = anchor
                 feat_vec = result.get_anchor_state(anchor=anchor, layer_ids=self.layer_ids)
                 self.shard_writer.add_step(feat_vec, anchor_meta)
+
+            # Explicitly drop the result to free intermediate tensor memory immediately
+            del result
 
         return {
             "episode_id": episode_id,
@@ -129,10 +126,10 @@ class ReplayRunner:
             "task_idx": t_idx,
             "is_success": is_success,
             "total_reward": 0.0,
-            "num_steps": len(episode_steps),
+            "num_steps": n_turns,
             "hit_max_rounds": (
                 max_steps is not None
-                and len(episode_steps) >= max_steps
+                and n_turns >= max_steps
                 and not is_success
             ),
         }
@@ -144,6 +141,7 @@ class ReplayRunner:
     ) -> list[dict]:
         trajectories = self.get_trajectories(limit=max_trajectories)
         results = []
+        summary_path = self.output_dir / "run_summary.parquet"
 
         if self.verbose:
             print(
@@ -166,12 +164,13 @@ class ReplayRunner:
             if self.verbose:
                 print(f"  Result: {status} (Steps: {result['num_steps']})")
 
-        # Finalize and flush all feature shards to disk
+            # Flush current shard buffer so completed trajectory activations are immediately written to disk
+            self.shard_writer.flush()
+            save_run_summary(summary_path, results)
+
+        # Finalize shard writer
         self.shard_writer.close()
 
-        # Save run summary Parquet
-        summary_path = self.output_dir / "run_summary.parquet"
-        save_run_summary(summary_path, results)
         success_count = sum(1 for r in results if r["is_success"])
         if self.verbose and results:
             print(
