@@ -55,6 +55,12 @@ def parse_args():
         help="Maximum turns per trajectory before truncating (default: None = replay all turns)",
     )
     parser.add_argument(
+        "--max_seq_len",
+        type=int,
+        default=16384,
+        help="Maximum sequence length before truncating older conversation turns from the left (default: 16384)",
+    )
+    parser.add_argument(
         "--layers",
         type=int,
         nargs="+",
@@ -97,6 +103,7 @@ def main():
     print(f"Cache Directory:     {args.cache_dir}")
     print(f"Max Trajectories:    {max_trajectories or 'All'}")
     print(f"Max Steps / Traj:    {args.max_steps or 'All'}")
+    print(f"Max Seq Length:      {args.max_seq_len or 'Unlimited'}")
     print(f"Target Layers:       {args.layers or 'All Layers'}")
     print(f"Anchors:             {args.anchors}")
     print(f"Shard Size:          {args.shard_size}")
@@ -112,7 +119,10 @@ def main():
 
     # 2. Initialize Activation Extractor (Loads Model onto Device)
     print("\n[2/3] Loading model engine into memory...")
-    extractor = ActivationExtractor(model=args.model)
+    extractor = ActivationExtractor(
+        model=args.model,
+        max_seq_len=args.max_seq_len,
+    )
 
     # 3. Initialize and Run ReplayRunner
     print("\n[3/3] Starting trace replay and activation harvesting...")

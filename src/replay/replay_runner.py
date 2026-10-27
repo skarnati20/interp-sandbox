@@ -85,7 +85,7 @@ class ReplayRunner:
 
             if self.verbose:
                 first_line = recorded_action.split("\n")[0] if "\n" in recorded_action else recorded_action
-                print(f"    [Step {step_idx + 1}/{n_turns}] Action: '{first_line[:70]}'")
+                print(f"    [Step {step_idx + 1}/{n_turns} | {result.total_tokens} toks] Action: '{first_line[:65]}'")
 
             step_meta = {
                 "episode_id": episode_id,

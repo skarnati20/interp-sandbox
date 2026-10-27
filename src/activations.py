@@ -131,14 +131,28 @@ class ActivationExtractor:
         model: str,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         torch_dtype: torch.dtype = torch.bfloat16,
+        max_seq_len: Optional[int] = 16384,
     ):
         self.device = device
+        self.max_seq_len = max_seq_len
         self.tokenizer = AutoTokenizer.from_pretrained(model)
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model,
-            torch_dtype=torch_dtype,
-            device_map="auto" if device == "cuda" else None,
-        )
+
+        model_kwargs = {
+            "device_map": "auto" if device == "cuda" else None,
+            "torch_dtype": torch_dtype,
+        }
+        try:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model,
+                attn_implementation="sdpa",
+                **model_kwargs,
+            )
+        except Exception:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model,
+                **model_kwargs,
+            )
+
         if device != "cuda":
             self.model.to(self.device)
         self.model.eval()
@@ -153,8 +167,16 @@ class ActivationExtractor:
         prompt_text = self.tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
-        inputs = self.tokenizer(prompt_text, return_tensors="pt").to(self.device)
-        prompt_len = inputs.input_ids.shape[1]
+        inputs = self.tokenizer(prompt_text, return_tensors="pt")
+        input_ids = inputs.input_ids
+
+        # Truncate prompt from left if it exceeds max sequence length budget
+        if self.max_seq_len is not None and input_ids.shape[1] > (self.max_seq_len - max_new_tokens):
+            input_ids = input_ids[:, -(self.max_seq_len - max_new_tokens):]
+
+        prompt_len = input_ids.shape[1]
+        input_ids = input_ids.to(self.device)
+        attention_mask = torch.ones_like(input_ids).to(self.device)
 
         generate_kwargs = {
             "max_new_tokens": max_new_tokens,
@@ -165,7 +187,11 @@ class ActivationExtractor:
         if temperature > 0.0:
             generate_kwargs["temperature"] = temperature
 
-        gen_out = self.model.generate(**inputs, **generate_kwargs)
+        gen_out = self.model.generate(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            **generate_kwargs,
+        )
 
         completion_ids = gen_out.sequences[0, prompt_len:]
         completion_text = self.tokenizer.decode(completion_ids, skip_special_tokens=True)
@@ -186,6 +212,10 @@ class ActivationExtractor:
         full_hidden_states = torch.stack(layer_tensors)
         num_completion_hidden_states = full_hidden_states.shape[1] - prompt_len
 
+        del gen_out
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         return ExtractionResult(
             completion_text=completion_text,
             hidden_states=full_hidden_states,
@@ -198,6 +228,7 @@ class ActivationExtractor:
         self,
         messages: list[dict],
         completion_text: str,
+        max_seq_len: Optional[int] = None,
     ) -> ExtractionResult:
         """
         Executes a single forward pass over pre-existing messages and completion (teacher-forcing),
@@ -216,7 +247,16 @@ class ActivationExtractor:
 
         full_input_ids = torch.cat(
             [prompt_inputs.input_ids, completion_inputs.input_ids], dim=1
-        ).to(self.device)
+        )
+
+        limit_len = max_seq_len or self.max_seq_len
+        if limit_len is not None and full_input_ids.shape[1] > limit_len:
+            excess = full_input_ids.shape[1] - limit_len
+            full_input_ids = full_input_ids[:, -limit_len:]
+            prompt_len = max(0, prompt_len - excess)
+            completion_len = min(completion_len, limit_len)
+
+        full_input_ids = full_input_ids.to(self.device)
         attention_mask = torch.ones_like(full_input_ids).to(self.device)
 
         out = self.model(
@@ -231,6 +271,10 @@ class ActivationExtractor:
             for l in range(1, num_layers + 1)
         ]
         full_hidden_states = torch.stack(layer_tensors)
+
+        del out
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         return ExtractionResult(
             completion_text=completion_text,
