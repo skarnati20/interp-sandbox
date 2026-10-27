@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Union
+import joblib
 import numpy as np
 from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import StandardScaler
@@ -65,3 +67,34 @@ class MLPProbe(Probe):
         if return_proba:
             return probs
         return (probs >= threshold).astype(int)
+
+    def save(self, path: str | Path) -> None:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        state = {
+            "probe_class": "MLPProbe",
+            "hidden_layer_sizes": self.hidden_layer_sizes,
+            "alpha": self.alpha,
+            "max_iter": self.max_iter,
+            "early_stopping": self.early_stopping,
+            "seed": self.seed,
+            "scaler": self.scaler,
+            "classifier": self.classifier,
+            "is_fitted": self.is_fitted,
+        }
+        joblib.dump(state, path)
+
+    @classmethod
+    def load(cls, path: str | Path) -> MLPProbe:
+        state = joblib.load(path)
+        probe = cls(
+            hidden_layer_sizes=state.get("hidden_layer_sizes", (64,)),
+            alpha=state.get("alpha", 0.01),
+            max_iter=state.get("max_iter", 500),
+            early_stopping=state.get("early_stopping", True),
+            seed=state.get("seed", 42),
+        )
+        probe.scaler = state["scaler"]
+        probe.classifier = state["classifier"]
+        probe.is_fitted = state.get("is_fitted", True)
+        return probe

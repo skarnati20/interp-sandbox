@@ -4,7 +4,9 @@ import os
 # Prevent OpenMP thread conflicts on macOS
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 
+from pathlib import Path
 from typing import Union
+import joblib
 import numpy as np
 import xgboost as xgb
 
@@ -73,3 +75,34 @@ class XGBoostProbe(Probe):
         if return_proba:
             return probs
         return (probs >= threshold).astype(int)
+
+    def save(self, path: str | Path) -> None:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        state = {
+            "probe_class": "XGBoostProbe",
+            "n_estimators": self.n_estimators,
+            "max_depth": self.max_depth,
+            "learning_rate": self.learning_rate,
+            "colsample_bytree": self.colsample_bytree,
+            "subsample": self.subsample,
+            "seed": self.seed,
+            "classifier": self.classifier,
+            "is_fitted": self.is_fitted,
+        }
+        joblib.dump(state, path)
+
+    @classmethod
+    def load(cls, path: str | Path) -> XGBoostProbe:
+        state = joblib.load(path)
+        probe = cls(
+            n_estimators=state.get("n_estimators", 100),
+            max_depth=state.get("max_depth", 3),
+            learning_rate=state.get("learning_rate", 0.05),
+            colsample_bytree=state.get("colsample_bytree", 0.3),
+            subsample=state.get("subsample", 0.8),
+            seed=state.get("seed", 42),
+        )
+        probe.classifier = state["classifier"]
+        probe.is_fitted = state.get("is_fitted", True)
+        return probe
