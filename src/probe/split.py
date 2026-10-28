@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional, Union
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import GroupShuffleSplit, train_test_split
 
 from ..store import ActivationDataset
+from .manifest import load_split_manifest, manifest_split_indices
 
 
 def filter_divergent_tasks(
@@ -78,14 +80,26 @@ def split_activation_dataset(
     divergent_tasks_only: bool = False,
     target_success_ratio: Optional[float] = None,
     seed: int = 42,
+    *,
+    manifest: Optional[dict | str | Path] = None,
 ) -> tuple[ActivationDataset, ActivationDataset]:
     """
     Splits an ActivationDataset into train and eval subsets:
     1. Optionally filters to divergent tasks (tasks with both success and failure across rollouts).
     2. Performs group-aware splitting to prevent task/trajectory leakage.
     3. Optionally rebalances the training set to a target success percentage.
+
+    Pass manifest=load_split_manifest("split.json") to reuse assignments across
+    models. Its grouping and assignments replace eval_size/group_by/seed for
+    splitting; seed still controls training-set balancing. Metadata is unchanged.
     """
     working_dataset = dataset
+    if isinstance(manifest, (str, Path)):
+        manifest = load_split_manifest(manifest)
+    if manifest is not None:
+        # Check the complete input before outcome-based filtering can hide an
+        # unknown task. Incomplete collections keep their original assignments.
+        manifest_split_indices(dataset.metadata, manifest)
 
     # Resolve grouping column
     group_col = group_by[0] if isinstance(group_by, (list, tuple)) else str(group_by)
@@ -99,7 +113,9 @@ def split_activation_dataset(
         working_dataset = filter_divergent_tasks(working_dataset, task_col=group_col)
 
     # 2. Group-aware train / eval split to prevent leakage
-    if group_col in working_dataset.metadata.columns:
+    if manifest is not None:
+        train_indices, eval_indices = manifest_split_indices(working_dataset.metadata, manifest)
+    elif group_col in working_dataset.metadata.columns:
         groups = working_dataset.metadata[group_col].values
         splitter = GroupShuffleSplit(n_splits=1, test_size=eval_size, random_state=seed)
         train_indices, eval_indices = next(splitter.split(working_dataset.X, working_dataset.y, groups=groups))
