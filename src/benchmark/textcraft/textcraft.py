@@ -39,11 +39,93 @@ class TextCraftActionParser:
     """
     Robust action parser for LLM outputs in TextCraft.
     Handles thinking tags (<think>...</think>), ReAct prefixes ('Action:', 'Command:'),
-    markdown codeblocks, conversational words ('more'), and natural language.
+    markdown codeblocks, conversational words ('more'), multi-line responses, and natural language.
     """
 
     @staticmethod
-    def parse(action_str: str) -> ParsedAction:
+    def parse_line(target_line: str) -> Optional[ParsedAction]:
+        target_line = target_line.strip()
+        if not target_line:
+            return None
+
+        # 1. Check for think/thought actions: "think: ...", "thought: ..."
+        think_line_match = re.match(r"^(?:think|thought)\s*:\s*(.*)", target_line, re.IGNORECASE)
+        if think_line_match:
+            return ParsedAction(action_type="think", raw_text=think_line_match.group(1).strip())
+
+        # 2. Check for inventory: "inventory", "inv", "check inventory"
+        if re.match(r"^(?:check\s+)?inventory$|^inv$", target_line, re.IGNORECASE):
+            return ParsedAction(action_type="inventory", raw_text=target_line)
+
+        # 3. Check for 'craft' commands: "craft <count> <target> using <ingredients>"
+        craft_match = re.match(
+            r"^craft\s+(?:(\d+)\s+)?([a-zA-Z0-9_\-\s]+?)\s+using\s+(.+)$",
+            target_line,
+            re.IGNORECASE,
+        )
+        if craft_match:
+            count_str, target_item, ings_str = craft_match.groups()
+            target_cnt = int(count_str) if count_str else 1
+            target_item = target_item.strip().lower()
+
+            ing_tokens = re.split(r",\s*|\s+and\s+", ings_str.strip())
+            ingredients = []
+            for token in ing_tokens:
+                token = token.strip()
+                if not token:
+                    continue
+                item_match = re.match(r"^(?:(\d+)\s+)?([a-zA-Z0-9_\-\s]+?)$", token)
+                if item_match:
+                    c_str, ing_name = item_match.groups()
+                    c = int(c_str) if c_str else 1
+                    ingredients.append((ing_name.strip().lower(), max(1, c)))
+
+            return ParsedAction(
+                action_type="craft",
+                target=target_item,
+                target_count=max(1, target_cnt),
+                ingredients=ingredients,
+                raw_text=target_line,
+            )
+
+        # 4. Check for 'get' commands: "get <count> <item>" or "get <item>"
+        get_match = re.match(
+            r"^get\s+(?:(\d+)\s+)?(?:more\s+)?([a-zA-Z0-9_\-\s]+?)(?:\s*\.|\s*$)",
+            target_line,
+            re.IGNORECASE,
+        )
+        if get_match:
+            count_str, item = get_match.groups()
+            cnt = int(count_str) if count_str else 1
+            item = item.strip().lower()
+            return ParsedAction(
+                action_type="get",
+                target=item,
+                target_count=max(1, cnt),
+                raw_text=target_line,
+            )
+
+        # 5. Fallback: simple craft without 'using': "craft <count> <item>"
+        simple_craft = re.match(
+            r"^craft\s+(?:(\d+)\s+)?([a-zA-Z0-9_\-\s]+?)(?:\s*\.|\s*$)",
+            target_line,
+            re.IGNORECASE,
+        )
+        if simple_craft:
+            c_str, item = simple_craft.groups()
+            cnt = int(count_str) if count_str else 1
+            return ParsedAction(
+                action_type="craft",
+                target=item.strip().lower(),
+                target_count=max(1, cnt),
+                ingredients=[],
+                raw_text=target_line,
+            )
+
+        return None
+
+    @classmethod
+    def parse(cls, action_str: str) -> ParsedAction:
         clean = action_str.strip()
 
         # 1. Extract thought if <think>...</think> present
@@ -71,87 +153,21 @@ class TextCraftActionParser:
             if line_clean:
                 candidates.append(line_clean)
 
-        target_line = candidates[0] if candidates else clean_text
-
-        # 2. Check for think/thought actions: "think: ...", "thought: ..."
-        think_line_match = re.match(r"^(?:think|thought)\s*:\s*(.*)", target_line, re.IGNORECASE)
-        if think_line_match:
-            return ParsedAction(action_type="think", raw_text=think_line_match.group(1).strip())
+        # Scan all candidate lines for the first executable action
+        for cand in candidates:
+            parsed = cls.parse_line(cand)
+            if parsed is not None:
+                return parsed
 
         # If thought tag was present and no candidate action line remains, treat as thought
-        if not target_line and thought_trace:
+        if thought_trace:
             return ParsedAction(action_type="think", raw_text=thought_trace)
 
-        # 3. Check for inventory: "inventory", "inv", "check inventory"
-        if re.match(r"^(?:check\s+)?inventory$|^inv$", target_line, re.IGNORECASE):
-            return ParsedAction(action_type="inventory", raw_text=target_line)
-
-        # 4. Check for 'get' commands: "get <count> <item>" or "get <item>"
-        get_match = re.match(
-            r"^get\s+(?:(\d+)\s+)?(?:more\s+)?([a-zA-Z0-9_\-\s]+?)(?:\s*\.|\s*$)",
-            target_line,
-            re.IGNORECASE,
-        )
-        if get_match:
-            count_str, item = get_match.groups()
-            cnt = int(count_str) if count_str else 1
-            item = item.strip().lower()
-            return ParsedAction(
-                action_type="get",
-                target=item,
-                target_count=max(1, cnt),
-                raw_text=target_line,
-            )
-
-        # 5. Check for 'craft' commands: "craft <count> <target> using <ingredients>"
-        # e.g.: "craft 1 dark oak planks using 1 dark oak log"
-        craft_match = re.match(
-            r"^craft\s+(?:(\d+)\s+)?([a-zA-Z0-9_\-\s]+?)\s+using\s+(.+)$",
-            target_line,
-            re.IGNORECASE,
-        )
-        if craft_match:
-            count_str, target_item, ings_str = craft_match.groups()
-            target_cnt = int(count_str) if count_str else 1
-            target_item = target_item.strip().lower()
-
-            # Parse ingredients: comma or 'and' separated
-            ing_tokens = re.split(r",\s*|\s+and\s+", ings_str.strip())
-            ingredients = []
-            for token in ing_tokens:
-                token = token.strip()
-                if not token:
-                    continue
-                item_match = re.match(r"^(?:(\d+)\s+)?([a-zA-Z0-9_\-\s]+?)$", token)
-                if item_match:
-                    c_str, ing_name = item_match.groups()
-                    c = int(c_str) if c_str else 1
-                    ingredients.append((ing_name.strip().lower(), max(1, c)))
-
-            return ParsedAction(
-                action_type="craft",
-                target=target_item,
-                target_count=max(1, target_cnt),
-                ingredients=ingredients,
-                raw_text=target_line,
-            )
-
-        # 6. Fallback: simple craft without 'using': "craft <count> <item>"
-        simple_craft = re.match(
-            r"^craft\s+(?:(\d+)\s+)?([a-zA-Z0-9_\-\s]+?)(?:\s*\.|\s*$)",
-            target_line,
-            re.IGNORECASE,
-        )
-        if simple_craft:
-            c_str, item = simple_craft.groups()
-            cnt = int(c_str) if c_str else 1
-            return ParsedAction(
-                action_type="craft",
-                target=item.strip().lower(),
-                target_count=max(1, cnt),
-                ingredients=[],
-                raw_text=target_line,
-            )
+        # Fallback: scan raw lines without prefix stripping in case prefix regex was overly aggressive
+        for raw_line in clean_text.split("\n"):
+            parsed = cls.parse_line(raw_line.strip())
+            if parsed is not None:
+                return parsed
 
         return ParsedAction(action_type="unknown", raw_text=action_str)
 
@@ -182,6 +198,7 @@ class TextCraftBenchmark(BaseBenchmark):
         min_depth: int = 1,
         max_depth: Optional[int] = None,
         max_distractors: int = 10,
+        max_steps: Optional[int] = None,
         seed: int = 42,
         easy_first: bool = False,
         balanced: bool = True,
@@ -191,6 +208,7 @@ class TextCraftBenchmark(BaseBenchmark):
         self.min_depth = min_depth
         self.max_depth = max_depth
         self.max_distractors = max_distractors
+        self.max_steps = max_steps
         self.seed = seed
         self.easy_first = easy_first
         self.balanced = balanced
@@ -279,6 +297,12 @@ class TextCraftBenchmark(BaseBenchmark):
                 rng=rng,
             )
 
+            # Determine optimal steps from DAG shortest-path walk and set dynamic max steps
+            optimal_steps = self.crafting_tree.get_optimal_steps(goal_item_id)
+            task_max_steps = max(10, int(optimal_steps * 2.5) + 6)
+            if self.max_steps is not None:
+                task_max_steps = min(task_max_steps, self.max_steps)
+
             recipe_set = set(r.recipe_str for r in recipes)
             distractor_set = set(d.recipe_str for d in distractors if d.recipe_str not in recipe_set)
             combined_recipes = list(recipe_set) + rng.sample(
@@ -304,6 +328,8 @@ class TextCraftBenchmark(BaseBenchmark):
                         "goal_name": goal_name,
                         "goal_count": 1,
                         "depth": depth,
+                        "optimal_steps": optimal_steps,
+                        "max_steps": task_max_steps,
                         "task_idx": task_idx,
                         "initial_observation": initial_observation,
                         "recipes": combined_recipes,
@@ -424,11 +450,17 @@ class TextCraftBenchmark(BaseBenchmark):
                     break
 
             if not has_enough:
-                obs_text = f"Could not find enough items to craft {target_str}"
+                obs_text = (
+                    f"Could not find enough items to craft {target_str}. "
+                    f"Use 'inventory' to check what you are carrying."
+                )
             else:
                 crafted_itemtag = self.crafting_tree.craft(recipe_candidate)
                 if crafted_itemtag is None:
-                    obs_text = f"Could not find a valid recipe for {target_str}"
+                    obs_text = (
+                        f"Could not find a valid recipe for {target_str} using the specified ingredients. "
+                        f"Check the crafting commands provided in the goal description."
+                    )
                 else:
                     # Deduct ingredients
                     for inp in input_items:
@@ -473,7 +505,11 @@ class TextCraftBenchmark(BaseBenchmark):
                         done = True
 
         else:
-            obs_text = f"Could not execute '{action_str}'"
+            obs_text = (
+                f"Could not execute '{action_str.strip()[:60]}'. "
+                "Invalid command. Please output ONLY an executable command: "
+                "'get <count> <item>', 'craft <count> <target> using <count> <item>, ...', or 'inventory'."
+            )
 
         return StepObservation(
             observation_text=obs_text,

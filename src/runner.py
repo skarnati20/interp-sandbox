@@ -11,9 +11,9 @@ from src.store import ShardWriter, save_run_summary
 
 class Runner:
     """
-    Executes benchmark rollouts across LLM agent tasks, records trajectory turns,
-    and persists dual-anchor activation tensors with grouped task metadata directly
-    into consolidated shards ('feat.shard*.npz' and 'meta.shard*.jsonl').
+    Executes benchmark tasks under interactive agent rollouts, records turn-level
+    residual-stream hidden states, and persists activation tensors with aligned
+    metadata into consolidated shards ('feat.shard*.npz' and 'meta.shard*.jsonl').
     """
 
     def __init__(
@@ -32,6 +32,7 @@ class Runner:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.layer_ids = layer_ids
         self.anchors = anchors or ["post_gen", "pre_gen"]
+        self.shard_size = shard_size
         self.verbose = verbose
 
         # Sharded storage writer for features
@@ -49,7 +50,8 @@ class Runner:
     def run_task(
         self,
         task: TaskInstance,
-        max_steps: int = 10,
+        max_steps: int = 35,
+        dynamic_steps: bool = True,
         rollout_k: int = 0,
         task_idx: Optional[int] = None,
         temperature: float = 0.0,
@@ -57,6 +59,7 @@ class Runner:
     ) -> dict:
         t_idx = task_idx if task_idx is not None else task.info.get("task_idx", 0)
         episode_id = episode_id or f"{task.task_id}_k{rollout_k}_{uuid.uuid4().hex[:6]}"
+        effective_max_steps = task.info.get("max_steps", max_steps) if dynamic_steps else max_steps
 
         try:
             # 1. Reset benchmark environment
@@ -74,7 +77,7 @@ class Runner:
             episode_steps: list[tuple[ExtractionResult, dict]] = []
             total_reward = 0.0
 
-            for step_idx in range(max_steps):
+            for step_idx in range(effective_max_steps):
                 # Run forward pass & extract hidden states
                 result: ExtractionResult = self.extractor.step_forward(
                     messages, temperature=temperature
@@ -86,7 +89,7 @@ class Runner:
 
                 if self.verbose:
                     first_line = action_text.split('\n')[0] if '\n' in action_text else action_text
-                    print(f"    [Step {step_idx + 1}] Action: '{first_line[:70]}' -> Obs: '{obs.observation_text[:70]}'")
+                    print(f"    [Step {step_idx + 1}/{effective_max_steps}] Action: '{first_line[:70]}' -> Obs: '{obs.observation_text[:70]}'")
 
                 step_meta = {
                     "episode_id": episode_id,
@@ -120,7 +123,7 @@ class Runner:
             for result, meta in episode_steps:
                 meta["success"] = success_int
                 meta["n_rounds"] = len(episode_steps)
-                meta["hit_max_rounds"] = len(episode_steps) >= max_steps and not is_success
+                meta["hit_max_rounds"] = len(episode_steps) >= effective_max_steps and not is_success
 
                 for anchor in self.anchors:
                     anchor_meta = dict(meta)
@@ -136,7 +139,7 @@ class Runner:
                 "is_success": is_success,
                 "total_reward": total_reward,
                 "num_steps": len(episode_steps),
-                "hit_max_rounds": len(episode_steps) >= max_steps and not is_success,
+                "hit_max_rounds": len(episode_steps) >= effective_max_steps and not is_success,
             }
 
         finally:
@@ -146,7 +149,8 @@ class Runner:
         self,
         split: str = "train",
         max_tasks: Optional[int] = None,
-        max_steps: int = 10,
+        max_steps: int = 35,
+        dynamic_steps: bool = True,
         n_rollouts: int = 1,
         temperature: float = 0.0,
     ) -> list[dict]:
@@ -160,16 +164,18 @@ class Runner:
         ep_count = 0
         for i, task in enumerate(tasks):
             task_idx = task.info.get("task_idx", i)
+            effective_max_steps = task.info.get("max_steps", max_steps) if dynamic_steps else max_steps
             for k in range(n_rollouts):
                 ep_count += 1
                 effective_temp = temperature if (temperature > 0.0 or n_rollouts == 1) else 0.7
                 print(
                     f"[{ep_count}/{total_episodes}] Running task {i+1}/{len(tasks)} "
-                    f"({task.task_id}) [Rollout k={k}, temp={effective_temp}]..."
+                    f"({task.task_id}) [Rollout k={k}, max_steps={effective_max_steps}, temp={effective_temp}]..."
                 )
                 result = self.run_task(
                     task=task,
                     max_steps=max_steps,
+                    dynamic_steps=dynamic_steps,
                     rollout_k=k,
                     task_idx=task_idx,
                     temperature=effective_temp,

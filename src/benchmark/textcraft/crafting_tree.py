@@ -78,6 +78,7 @@ class CraftingTree:
 
         self.load_recipes(self.recipes_path)
         self.clean_up_recipes()
+        self.optimal_steps: dict[str, int] = self.compute_optimal_steps()
 
     def load_recipes(self, path: Path) -> None:
         if not path.is_file():
@@ -375,6 +376,51 @@ class CraftingTree:
                 recipe_depths.append(self.get_min_depth(input_itemtag_count.item_tag.name) + 1)
             depths.append(max(recipe_depths) if recipe_depths else 1)
         return min(depths) if depths else 0
+
+    def compute_optimal_steps(self) -> dict[str, int]:
+        """
+        Computes the minimum number of actions ('get' and 'craft') required to create
+        each item by walking the recipe DAG and relaxing shortest paths.
+        """
+        cost: dict[str, int] = {}
+        for item in self.itemid_set:
+            if item not in self.itemid_recipes:
+                cost[item] = 1
+
+        changed = True
+        while changed:
+            changed = False
+            # Update tag costs from items
+            for tag in self.tag_set:
+                tagged_items = list(self.get_items_with_tags(tag))
+                known = [cost[i] for i in tagged_items if i in cost]
+                if known:
+                    min_tag_cost = min(known)
+                    if tag not in cost or min_tag_cost < cost[tag]:
+                        cost[tag] = min_tag_cost
+                        changed = True
+
+            # Update recipe outputs from inputs
+            for target, recipes in self.itemid_recipes.items():
+                for r in recipes:
+                    unique_inputs = set(inp.item_tag.name for inp in r.input_items)
+                    if all(inp in cost for inp in unique_inputs):
+                        r_cost = 1 + sum(cost[inp] for inp in unique_inputs)
+                        if target not in cost or r_cost < cost[target]:
+                            cost[target] = r_cost
+                            changed = True
+
+        return cost
+
+    def get_optimal_steps(self, item_name: str) -> int:
+        clean = item_name if item_name.startswith("minecraft:") else f"minecraft:{item_name}"
+        if clean in self.optimal_steps:
+            return self.optimal_steps[clean]
+        if clean + "s" in self.optimal_steps:
+            return self.optimal_steps[clean + "s"]
+        if clean.endswith("s") and clean[:-1] in self.optimal_steps:
+            return self.optimal_steps[clean[:-1]]
+        return 2
 
     def item_recipes_min_depth(self, min_depth: int) -> Iterator[tuple[str, int]]:
         for item in sorted(self.itemid_recipes.keys()):

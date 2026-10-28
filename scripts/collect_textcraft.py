@@ -75,8 +75,15 @@ def parse_args():
     parser.add_argument(
         "--max_steps",
         type=int,
-        default=16,
-        help="Maximum crafting steps per episode before terminating (default: 16)",
+        default=35,
+        help="Hard ceiling or fallback step cap per episode (default: 35)",
+    )
+    parser.add_argument(
+        "--no_dynamic_steps",
+        action="store_false",
+        dest="dynamic_steps",
+        default=True,
+        help="Disable adaptive per-task dynamic step limits based on recipe tree depth (default: dynamic steps enabled)",
     )
     parser.add_argument(
         "--layers",
@@ -125,7 +132,7 @@ def main():
     print(f"Sampling Mode:    {'Balanced Depths (1-4)' if use_balanced else ('Easy First' if args.easy else 'Deepest First')}")
     print(f"Min Recipe Depth: {min_depth}")
     print(f"Max Distractors:  {max_distractors}")
-    print(f"Max Steps/Ep:     {args.max_steps}")
+    print(f"Dynamic Steps:    {'Enabled (Adaptive per-task from recipe DAG)' if args.dynamic_steps else f'Disabled (Fixed {args.max_steps})'}")
     print(f"Target Layers:    {args.layers or 'All Layers'}")
     print(f"Anchors:          {args.anchors}")
     print(f"Output Directory: {output_path.resolve()}")
@@ -142,6 +149,7 @@ def main():
         min_depth=min_depth,
         max_depth=args.max_depth,
         max_distractors=max_distractors,
+        max_steps=args.max_steps,
         easy_first=args.easy,
         balanced=use_balanced,
     )
@@ -161,6 +169,7 @@ def main():
     results = runner.run_benchmark(
         max_tasks=args.num_tasks,
         max_steps=args.max_steps,
+        dynamic_steps=args.dynamic_steps,
         n_rollouts=args.n_rollouts,
         temperature=args.temperature,
     )
