@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import torch
 
+from .activations import ExtractionResult
 from .hf import download_activations
 
 
@@ -60,8 +61,6 @@ class ShardWriter:
         layer_ids: Optional[list[int]] = None,
     ):
         self.output_dir = Path(output_dir)
-        if self.output_dir.exists() and (not self.output_dir.is_dir() or any(self.output_dir.iterdir())):
-            raise FileExistsError(f"Feature output must be empty; resume is not supported: {self.output_dir}")
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.shard_size = shard_size
         self.layer_ids = layer_ids
@@ -98,8 +97,6 @@ class ShardWriter:
 
         feat_path = self.output_dir / f"feat.shard{self.shard_idx}.npz"
         meta_path = self.output_dir / f"meta.shard{self.shard_idx}.jsonl"
-        if feat_path.exists() or meta_path.exists():
-            raise FileExistsError(f"Refusing to replace an existing shard: {feat_path} / {meta_path}")
 
         # Stack into [N, n_layers, hidden_dim]
         stacked_x = np.stack(self.current_feats, axis=0)
@@ -110,11 +107,10 @@ class ShardWriter:
         )
 
         # 1. Save compressed numpy tensor shard
-        with feat_path.open("xb") as fp:
-            np.savez_compressed(fp, X=stacked_x, layer_ids=layer_ids_arr)
+        np.savez_compressed(feat_path, X=stacked_x, layer_ids=layer_ids_arr)
 
         # 2. Save matching jsonl metadata shard
-        with meta_path.open("x", encoding="utf-8") as fp:
+        with open(meta_path, "w", encoding="utf-8") as fp:
             for record in self.current_metas:
                 fp.write(json.dumps(record) + "\n")
 
@@ -150,9 +146,6 @@ class ShardReader:
         allow_patterns: Optional[list[str]] = None,
         local_dir: Optional[str | Path] = None,
         token: Optional[str] = None,
-        revision: Optional[str] = None,
-        cache_dir: Optional[str | Path] = None,
-        local_files_only: bool = False,
     ) -> ShardReader:
         """
         Downloads activation shards from a Hugging Face repository and returns
@@ -164,9 +157,6 @@ class ShardReader:
             allow_patterns=allow_patterns,
             local_dir=local_dir,
             token=token,
-            revision=revision,
-            cache_dir=cache_dir,
-            local_files_only=local_files_only,
         )
         return cls(data_dir=download_dir, token=token)
 
@@ -180,9 +170,6 @@ class ShardReader:
         allow_patterns: Optional[list[str]] = None,
         local_dir: Optional[str | Path] = None,
         token: Optional[str] = None,
-        revision: Optional[str] = None,
-        cache_dir: Optional[str | Path] = None,
-        local_files_only: bool = False,
     ) -> ActivationDataset:
         """
         Convenience method: downloads from Hugging Face and returns the
@@ -194,23 +181,18 @@ class ShardReader:
             allow_patterns=allow_patterns,
             local_dir=local_dir,
             token=token,
-            revision=revision,
-            cache_dir=cache_dir,
-            local_files_only=local_files_only,
         )
         return reader.read_all(anchor=anchor, layer=layer)
 
     def get_shard_files(self) -> list[tuple[Path, Path]]:
         """Finds all matching (feat.shard*.npz, meta.shard*.jsonl) file pairs."""
-        feat_files = sorted(self.data_dir.rglob("feat.shard*.npz"),
-                            key=lambda path: (str(path.parent), int(path.stem.removeprefix("feat.shard"))))
+        feat_files = sorted(self.data_dir.rglob("feat.shard*.npz"))
         pairs = []
         for feat_path in feat_files:
             meta_name = feat_path.name.replace("feat.", "meta.").replace(".npz", ".jsonl")
             meta_path = feat_path.with_name(meta_name)
-            pairs.append((feat_path, meta_path))
-        if {meta for _, meta in pairs} != set(self.data_dir.rglob("meta.shard*.jsonl")):
-            raise ValueError(f"Every feature shard must have a matching metadata shard in {self.data_dir}")
+            if meta_path.exists():
+                pairs.append((feat_path, meta_path))
         return pairs
 
     def load_single_shard(
@@ -221,24 +203,10 @@ class ShardReader:
         layer: Optional[int] = None,
     ) -> Optional[ActivationDataset]:
         """Loads and filters a single shard pair."""
-        with np.load(feat_path, allow_pickle=False) as npz_data:
-            if "X" not in npz_data or "layer_ids" not in npz_data:
-                raise ValueError(f"Missing X or layer_ids in {feat_path}")
+        with np.load(feat_path) as npz_data:
             raw_x = np.array(npz_data["X"], copy=True)
-            raw_layers = npz_data["layer_ids"]
-            if raw_x.ndim != 3 or raw_layers.ndim != 1 or len(raw_layers) != raw_x.shape[1]:
-                raise ValueError(f"Expected X shaped [rows, layers, hidden_dim] and matching layer_ids in {feat_path}")
-            layer_ids = raw_layers.tolist()
-        with meta_path.open(encoding="utf-8") as fp:
-            records = [json.loads(line) for line in fp if line.strip()]
-        if len(records) != len(raw_x):
-            raise ValueError(f"Feature/metadata row count mismatch for {feat_path}")
-        for record in records:
-            if not isinstance(record, dict) or "activations" in record:
-                raise ValueError(f"Metadata must be an object without an activations key: {meta_path}")
-            if "layer_ids" in record and record["layer_ids"] != layer_ids:
-                raise ValueError(f"Recorded layer_ids differ from feature shard: {meta_path}")
-        meta_df = pd.DataFrame(records)
+            layer_ids = list(npz_data["layer_ids"])
+        meta_df = pd.read_json(meta_path, lines=True)
 
         # 1. Filter by anchor if specified
         if anchor is not None and "anchor" in meta_df.columns:
@@ -283,15 +251,7 @@ class ShardReader:
         Yields an ActivationDataset shard-by-shard to minimize peak memory usage.
         """
         pairs = self.get_shard_files()
-        expected_layout = None
         for feat_path, meta_path in pairs:
-            # Check before filtering so a mismatched shard cannot hide behind
-            # an anchor filter or a single-layer selection.
-            with np.load(feat_path, allow_pickle=False) as npz_data:
-                layout = (npz_data["X"].shape[1:], npz_data["layer_ids"].tolist())
-            if expected_layout is not None and layout != expected_layout:
-                raise ValueError(f"Activation shape or layer_ids differ across shards: {feat_path}")
-            expected_layout = layout
             dataset = self.load_single_shard(feat_path, meta_path, anchor=anchor, layer=layer)
             if dataset is not None and dataset.num_samples > 0:
                 yield dataset

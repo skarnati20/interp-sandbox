@@ -75,7 +75,6 @@ def train_and_evaluate(
     seed: int = 42,
     *,
     manifest: Optional[dict | str | Path] = None,
-    **split_options,
 ) -> dict[str, Any]:
     """
     Complete pipeline to split data, train probe, and evaluate performance.
@@ -88,11 +87,10 @@ def train_and_evaluate(
     - train_max_turn: Specific cutoff for training (overrides max_turn).
     - eval_max_turn: Specific cutoff for evaluation (overrides max_turn).
 
-    Pass manifest to reuse saved task assignments across models. Other manifest
-    options (e.g. task_catalog, eval_split) are forwarded to the shared splitter.
+    Pass manifest to reuse saved task assignments when splitting dataset.
     """
-    if (manifest is not None or split_options) and (train_set is not None or eval_set is not None):
-        raise ValueError("Manifest options require dataset, without pre-split train/eval inputs")
+    if manifest is not None and (train_set is not None or eval_set is not None):
+        raise ValueError("Use manifest with dataset, or provide pre-split train_set and eval_set")
     if train_set is None or eval_set is None:
         if dataset is None:
             raise ValueError("Must provide either 'dataset' or both 'train_set' and 'eval_set'.")
@@ -104,7 +102,6 @@ def train_and_evaluate(
             target_success_ratio=target_success_ratio,
             seed=seed,
             manifest=manifest,
-            **split_options,
         )
 
     actual_train_cutoff = train_max_turn if train_max_turn is not None else max_turn

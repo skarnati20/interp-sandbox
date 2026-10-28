@@ -18,13 +18,48 @@ pip install -r requirements.txt
 
 echo "=== Installing BigCodeBench Evaluation Requirements ==="
 pip install \
+    seaborn \
+    matplotlib \
     scipy \
     scikit-learn \
-    matplotlib \
+    statsmodels \
+    sympy \
+    nltk \
+    folium \
+    geopy \
+    geopandas \
+    Django \
+    flask \
+    flask_login \
+    flask_restful \
+    WTForms \
+    openpyxl \
+    xlrd \
+    xlwt \
+    Pillow \
+    beautifulsoup4 \
+    lxml \
+    xmltodict \
+    cryptography \
+    pycryptodome \
+    Faker \
+    python-docx \
+    wordcloud \
+    textblob \
+    wikipedia \
+    soundfile \
+    requests-mock \
+    pytest-timeout \
+    psutil \
+    tabulate \
+    prettytable \
     requests \
     tqdm \
     rich
 
+echo "=== Downloading Required NLTK Corpora ==="
+python -c "import nltk; nltk.download('punkt', quiet=True); nltk.download('punkt_tab', quiet=True); nltk.download('stopwords', quiet=True); nltk.download('averaged_perceptron_tagger', quiet=True)"
+
 echo "=== BigCodeBench Setup Complete! ==="
 echo "To run BigCodeBench Qwen2.5-Coder-7B data collection:"
-echo "  python scripts/collect_bigcodebench.py --model Qwen/Qwen2.5-Coder-7B-Instruct --subset hard --num_tasks 50 --n_rollouts 5 --max_steps 5 --temperature 0.7 --layers 20 --anchors post_gen pre_gen --output_dir artifacts/bigcodebench/qwen2.5-7b/qwen2.5-7b"
+echo "  python scripts/collect_bigcodebench.py --model Qwen/Qwen2.5-Coder-7B-Instruct --subset full --split instruct --n_rollouts 3 --temperature 0.7 --max_steps 5 --timeout 15.0 --output_dir artifacts/bigcodebench/qwen7b_full_k3"
