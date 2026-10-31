@@ -113,7 +113,7 @@ class TextCraftActionParser:
         )
         if simple_craft:
             c_str, item = simple_craft.groups()
-            cnt = int(count_str) if count_str else 1
+            cnt = int(c_str) if c_str else 1
             return ParsedAction(
                 action_type="craft",
                 target=item.strip().lower(),
