@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Union
+from typing import TYPE_CHECKING, Any, Optional
 import joblib
 import numpy as np
 from sklearn.linear_model import LogisticRegression
@@ -10,22 +10,35 @@ from sklearn.preprocessing import StandardScaler
 from ...store import ActivationDataset
 from ..base import Probe
 
+if TYPE_CHECKING:
+    from ...steering.strategy import ResamplingSteeringStrategy, VectorSteeringStrategy
+
 
 class LinearProbe(Probe):
-    def __init__(self, c_reg: float = 1.0, max_iter: int = 1000):
+    """
+    Standard linear probe (Logistic Regression with L2 regularization)
+    trained on residual-stream activations.
+    """
+
+    def __init__(self, c_reg: float = 1.0):
         self.c_reg = c_reg
         self.scaler = StandardScaler()
-        self.classifier = LogisticRegression(C=c_reg, max_iter=max_iter)
+        self.classifier = LogisticRegression(C=c_reg, max_iter=1000, random_state=42)
         self.is_fitted = False
 
-    def fit(self, train_set: ActivationDataset) -> None:
-        scaled_x = self.scaler.fit_transform(train_set.X)
+    def fit(self, train_set: ActivationDataset) -> LinearProbe:
+        raw_x = train_set.X
+        if raw_x.ndim == 3:
+            raw_x = raw_x.reshape(raw_x.shape[0], -1)
+
+        scaled_x = self.scaler.fit_transform(raw_x)
         self.classifier.fit(scaled_x, train_set.y)
         self.is_fitted = True
+        return self
 
     def predict(
         self,
-        eval_set: Union[ActivationDataset, np.ndarray],
+        eval_set: ActivationDataset | np.ndarray,
         return_proba: bool = False,
         threshold: float = 0.5,
     ) -> np.ndarray:
@@ -51,6 +64,53 @@ class LinearProbe(Probe):
             v = raw_w
         norm = np.linalg.norm(v)
         return (v / norm) if norm > 0 else v
+
+    def get_steerer(
+        self,
+        coeff: float = 1.0,
+        threshold: float = 0.5,
+        condition: str = "threshold_gated",
+        injection_layer: Optional[int] = None,
+    ) -> VectorSteeringStrategy:
+        """
+        Returns a configured VectorSteeringStrategy using this probe's learned
+        steering direction vector.
+
+        Args:
+            coeff: Steering strength multiplier.
+            threshold: Probability threshold below which steering triggers (when condition='threshold_gated').
+            condition: 'threshold_gated' (intervene on failures) or 'always'.
+            injection_layer: Optional layer override to inject vector.
+        """
+        from ...steering.strategy import VectorSteeringStrategy
+
+        return VectorSteeringStrategy(
+            steering_vector=self.steering_vector,
+            coeff=coeff,
+            condition=condition,
+            threshold=threshold,
+            injection_layer=injection_layer,
+        )
+
+    def get_resampler(
+        self,
+        threshold: float = 0.5,
+        max_attempts: int = 5,
+        resample_temperature: float = 0.7,
+        mode: str = "first_above_threshold",
+    ) -> ResamplingSteeringStrategy:
+        """
+        Returns a configured ResamplingSteeringStrategy that uses this probe
+        for real-time rejection sampling and verification.
+        """
+        from ...steering.strategy import ResamplingSteeringStrategy
+
+        return ResamplingSteeringStrategy(
+            threshold=threshold,
+            max_attempts=max_attempts,
+            resample_temperature=resample_temperature,
+            mode=mode,
+        )
 
     def save(self, path: str | Path) -> None:
         path = Path(path)
