@@ -43,8 +43,8 @@ class Runner:
             layer_ids=layer_ids,
         )
 
-    def get_tasks(self, split: str = "train", limit: Optional[int] = None) -> list[TaskInstance]:
-        tasks = self.benchmark.list_tasks(split=split)
+    def get_tasks(self, limit: Optional[int] = None) -> list[TaskInstance]:
+        tasks = self.benchmark.list_tasks()
         return tasks[:limit] if limit else tasks
 
     def run_task(
@@ -147,14 +147,13 @@ class Runner:
 
     def run_benchmark(
         self,
-        split: str = "train",
         max_tasks: Optional[int] = None,
         max_steps: int = 35,
         dynamic_steps: bool = True,
         n_rollouts: int = 1,
         temperature: float = 0.0,
     ) -> list[dict]:
-        tasks = self.get_tasks(split=split, limit=max_tasks)
+        tasks = self.get_tasks(limit=max_tasks)
         results = []
         total_episodes = len(tasks) * n_rollouts
 
