@@ -50,17 +50,6 @@ class SteeringRunner:
             layer_ids=[layer_id],
         )
 
-    def _get_model_layers(self):
-        """Resolves the transformer decoder layers module list from the extractor's model."""
-        model = self.extractor.model
-        if hasattr(model, "model") and hasattr(model.model, "layers"):
-            return model.model.layers
-        elif hasattr(model, "transformer") and hasattr(model.transformer, "h"):
-            return model.transformer.h
-        elif hasattr(model, "layers"):
-            return model.layers
-        raise AttributeError("Could not locate transformer decoder layers on extractor model.")
-
     def train_intervention(self, train_set: ActivationDataset) -> None:
         """Trains both the prediction probe and the steering module on training activations."""
         self.probe.fit(train_set)
@@ -93,9 +82,6 @@ class SteeringRunner:
         inputs = self.extractor.tokenizer(prompt_text, return_tensors="pt")
         input_ids = inputs.input_ids.to(self.extractor.device)
 
-        layers = self._get_model_layers()
-        target_layer = layers[min(max(0, self.layer_id), len(layers) - 1)]
-
         generated_token_ids = []
         token_probe_scores = []
         steered_tokens = []
@@ -122,7 +108,7 @@ class SteeringRunner:
 
                 return (hidden,) + output[1:] if is_tuple else hidden
 
-            handle = target_layer.register_forward_hook(hook_fn)
+            handle = self.extractor.model.model.layers[self.layer_id].register_forward_hook(hook_fn)
             try:
                 with torch.inference_mode():
                     outputs = self.extractor.model(input_ids=input_ids, use_cache=False)
