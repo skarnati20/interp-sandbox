@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from src.benchmark.base import TaskInstance
+from src.benchmark.base import BaseBenchmark, StepObservation, TaskInstance
 from src.probe.base import Probe
 from src.steering.steerers.centroid import CentroidSteerer
 from src.steering_runner import SteeringRunner
@@ -34,6 +34,42 @@ class DummyProbe(Probe):
         if return_proba:
             return probs
         return (probs >= threshold).astype(int)
+
+
+class DummyBenchmark(BaseBenchmark):
+    def __init__(self, done_at_step: int = 2, success: bool = True):
+        self.done_at_step = done_at_step
+        self.success = success
+        self.step_count = 0
+
+    def list_tasks(self, split: str = "train") -> list[TaskInstance]:
+        return [
+            TaskInstance(
+                task_id="task_1",
+                instruction="Craft planks.",
+                system_prompt="You are an agent in Minecraft.",
+                info={"max_steps": 5},
+            )
+        ]
+
+    def reset(self, task: TaskInstance, seed: int | None = None) -> StepObservation:
+        self.step_count = 0
+        return StepObservation(observation_text="Inventory: 1 log", step_reward=0.0, is_done=False)
+
+    def step(self, action_str: str) -> StepObservation:
+        self.step_count += 1
+        done = self.step_count >= self.done_at_step
+        return StepObservation(
+            observation_text=f"Crafted item at step {self.step_count}",
+            step_reward=1.0 if done else 0.0,
+            is_done=done,
+        )
+
+    def evaluate(self, task: TaskInstance) -> bool:
+        return self.success
+
+    def close(self) -> None:
+        pass
 
 
 class TestCentroidSteerer(unittest.TestCase):
@@ -106,7 +142,7 @@ class TestSteeringRunner(unittest.TestCase):
         self.mock_extractor.tokenizer.apply_chat_template.return_value = "Prompt text"
         self.mock_extractor.tokenizer.return_value = MagicMock(input_ids=torch.tensor([[10, 20]]))
         self.mock_extractor.tokenizer.eos_token_id = 999
-        self.mock_extractor.tokenizer.decode.return_value = "generated response"
+        self.mock_extractor.tokenizer.decode.return_value = "craft 1 planks"
 
         # Mock model forward outputs
         class ModelOutput:
@@ -118,7 +154,6 @@ class TestSteeringRunner(unittest.TestCase):
                     torch.zeros((1, 1, 64)),
                 )
 
-        # Real hook execution on mock layer
         self.mock_layer = MagicMock()
 
         def mock_register_forward_hook(hook_fn):
@@ -136,7 +171,6 @@ class TestSteeringRunner(unittest.TestCase):
         def mock_model_forward(*args, **kwargs):
             out = ModelOutput()
             if self._active_hook is not None:
-                # Run hook on hidden states
                 res = self._active_hook(self.mock_layer, args, (out.hidden_states[1],))
                 out.hidden_states = (out.hidden_states[0], res[0] if isinstance(res, tuple) else res)
             return out
@@ -146,14 +180,8 @@ class TestSteeringRunner(unittest.TestCase):
         self.probe = DummyProbe(score=0.8)
         self.steerer = CentroidSteerer(alpha=1.0)
         self.steerer.steering_direction = np.ones(64)
-
-        self.eval_set = [
-            TaskInstance(
-                task_id="task_1",
-                instruction="Write a hello function",
-                system_prompt="You are a helpful assistant.",
-            )
-        ]
+        self.benchmark = DummyBenchmark(done_at_step=2, success=True)
+        self.test_task = self.benchmark.list_tasks()[0]
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -163,7 +191,7 @@ class TestSteeringRunner(unittest.TestCase):
             extractor=self.mock_extractor,
             probe=self.probe,
             steerer=self.steerer,
-            eval_set=self.eval_set,
+            benchmark=self.benchmark,
             output_dir=self.temp_dir.name,
             layer_id=0,
             verbose=False,
@@ -172,12 +200,18 @@ class TestSteeringRunner(unittest.TestCase):
         self.assertEqual(len(tasks), 1)
         self.assertEqual(tasks[0].task_id, "task_1")
 
+        # Test passing custom tasks
+        custom_task = TaskInstance(task_id="custom", instruction="do it", system_prompt="prompt")
+        custom_tasks = runner.get_tasks(tasks=[custom_task])
+        self.assertEqual(len(custom_tasks), 1)
+        self.assertEqual(custom_tasks[0].task_id, "custom")
+
     def test_train_intervention(self):
         runner = SteeringRunner(
             extractor=self.mock_extractor,
             probe=self.probe,
             steerer=self.steerer,
-            eval_set=self.eval_set,
+            benchmark=self.benchmark,
             output_dir=self.temp_dir.name,
             layer_id=0,
             verbose=False,
@@ -195,13 +229,12 @@ class TestSteeringRunner(unittest.TestCase):
         self.assertIsNotNone(self.steerer.steering_direction)
 
     def test_run_task_no_intervention(self):
-        # Probe score is 0.8, threshold is 0.5 -> No failure, steerer.intervene is NOT called
         self.probe.score = 0.8
         runner = SteeringRunner(
             extractor=self.mock_extractor,
             probe=self.probe,
             steerer=self.steerer,
-            eval_set=self.eval_set,
+            benchmark=self.benchmark,
             output_dir=self.temp_dir.name,
             layer_id=0,
             threshold=0.5,
@@ -210,21 +243,19 @@ class TestSteeringRunner(unittest.TestCase):
 
         self.steerer.intervene = MagicMock(side_effect=self.steerer.intervene)
 
-        task = self.eval_set[0]
-        res = runner.run_task(task, max_steps=2)
+        res = runner.run_task(self.test_task)
 
-        self.assertEqual(res["num_tokens"], 2)
+        self.assertTrue(res["is_success"])
         self.assertEqual(res["steered_steps"], 0)
         self.steerer.intervene.assert_not_called()
 
     def test_run_task_with_intervention(self):
-        # Probe score is 0.2, threshold is 0.5 -> Failure detected, steerer.intervene IS called
         self.probe.score = 0.2
         runner = SteeringRunner(
             extractor=self.mock_extractor,
             probe=self.probe,
             steerer=self.steerer,
-            eval_set=self.eval_set,
+            benchmark=self.benchmark,
             output_dir=self.temp_dir.name,
             layer_id=0,
             threshold=0.5,
@@ -233,27 +264,50 @@ class TestSteeringRunner(unittest.TestCase):
 
         self.steerer.intervene = MagicMock(side_effect=self.steerer.intervene)
 
-        task = self.eval_set[0]
-        res = runner.run_task(task, max_steps=2)
+        res = runner.run_task(self.test_task)
 
-        self.assertEqual(res["num_tokens"], 2)
-        self.assertEqual(res["steered_steps"], 2)
-        self.assertEqual(self.steerer.intervene.call_count, 2)
+        self.assertTrue(res["is_success"])
+        self.assertGreater(res["steered_steps"], 0)
+        self.assertGreater(self.steerer.intervene.call_count, 0)
 
-    def test_run_eval_tasks(self):
+    def test_multiturn_benchmark_rollout(self):
+        self.benchmark.done_at_step = 3
+        self.probe.score = 0.3
         runner = SteeringRunner(
             extractor=self.mock_extractor,
             probe=self.probe,
             steerer=self.steerer,
-            eval_set=self.eval_set,
+            benchmark=self.benchmark,
+            output_dir=self.temp_dir.name,
+            layer_id=0,
+            threshold=0.5,
+            verbose=False,
+        )
+
+        res = runner.run_task(self.test_task, dynamic_steps=True)
+
+        self.assertTrue(res["is_success"])
+        self.assertEqual(res["num_steps"], 3)
+        self.assertEqual(res["max_steps"], 5)  # From task.info["max_steps"]
+        self.assertFalse(res["hit_max_rounds"])
+        self.assertGreater(res["steered_steps"], 0)
+
+    def test_run_benchmark(self):
+        runner = SteeringRunner(
+            extractor=self.mock_extractor,
+            probe=self.probe,
+            steerer=self.steerer,
+            benchmark=self.benchmark,
             output_dir=self.temp_dir.name,
             layer_id=0,
             verbose=False,
         )
 
-        results = runner.run_eval_tasks(max_tasks=1, max_steps=2)
+        # Run on custom task subset (e.g. 20% validation split)
+        results = runner.run_benchmark(tasks=[self.test_task], max_tasks=1)
         self.assertEqual(len(results), 1)
-        self.assertEqual(results[0]["num_tokens"], 2)
+        self.assertTrue(results[0]["is_success"])
+        self.assertEqual(results[0]["num_steps"], 2)
 
 
 if __name__ == "__main__":

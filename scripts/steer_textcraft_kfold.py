@@ -5,8 +5,8 @@
 2. Performs stratified group 5-fold cross-validation by task_id to ensure zero data leakage.
 3. In each fold:
    - Trains probe and CentroidSteerer on 80% training activations (with 50/50 rebalancing).
-   - Runs token-at-a-time steering on the remaining 20% test tasks via SteeringRunner.
-4. Collects and saves consolidated steering telemetry across all folds.
+   - Runs multi-turn token-at-a-time steering on the remaining 20% test tasks via runner.run_benchmark(tasks=val_tasks).
+4. Collects and saves consolidated steering telemetry and success rates across all folds.
 """
 
 from __future__ import annotations
@@ -95,8 +95,15 @@ def parse_args():
     parser.add_argument(
         "--max_steps",
         type=int,
-        default=128,
-        help="Maximum generation tokens per task (default: 128)",
+        default=35,
+        help="Fallback turn cap per episode if dynamic_steps is disabled (default: 35)",
+    )
+    parser.add_argument(
+        "--no_dynamic_steps",
+        action="store_false",
+        dest="dynamic_steps",
+        default=True,
+        help="Disable adaptive recipe-DAG step budgeting and use fixed max_steps",
     )
     parser.add_argument(
         "--temperature",
@@ -144,6 +151,7 @@ def main():
     print(f"Anchor:             {args.anchor}")
     print(f"Threshold:          {args.threshold}")
     print(f"Alpha:              {args.alpha} (Normalize: {args.normalize})")
+    print(f"Dynamic Steps:      {args.dynamic_steps} (Fallback max: {args.max_steps})")
     print(f"Output Directory:   {output_dir.resolve()}")
     print("=" * 65)
 
@@ -159,7 +167,7 @@ def main():
     print(f"  -> Unique task IDs: {dataset.metadata['task_id'].nunique()}")
     print(f"  -> Success label distribution: 0={np.sum(dataset.y == 0)}, 1={np.sum(dataset.y == 1)}")
 
-    # 2. Initialize TextCraft benchmark tasks
+    # 2. Initialize TextCraft benchmark
     print("\n[2/4] Loading TextCraft benchmark tasks...")
     bench = TextCraftBenchmark(num_tasks=544)
     all_tasks = bench.list_tasks()
@@ -171,7 +179,7 @@ def main():
     extractor = ActivationExtractor(model=args.model)
 
     # 4. 5-Fold Stratified Group Cross-Validation
-    print("\n[4/4] Executing 5-Fold Cross-Validation Steering...")
+    print("\n[4/4] Executing 5-Fold Cross-Validation Multi-Turn Steering...")
     groups = dataset.metadata["task_id"].values
     sgkf = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=args.seed)
     splits = list(sgkf.split(dataset.X, dataset.y, groups))
@@ -204,7 +212,7 @@ def main():
             extractor=extractor,
             probe=probe,
             steerer=steerer,
-            eval_set=val_tasks,
+            benchmark=bench,
             output_dir=fold_out_dir,
             layer_id=args.layer_id,
             threshold=args.threshold,
@@ -219,11 +227,13 @@ def main():
         probe_eval = probe.evaluate(val_set)
         print(f"  Fold {fold_num} Probe Sanity Check: ROC-AUC = {probe_eval.get('roc_auc', 0.0):.4f}, Acc = {probe_eval.get('accuracy', 0.0):.4f}")
 
-        # Run token-by-token steering on the 20% validation tasks
-        print(f"  Running token-at-a-time steering on Fold {fold_num} test tasks...")
-        fold_results = runner.run_eval_tasks(
+        # Run multi-turn steering on the 20% validation tasks until complete or dynamic budget
+        print(f"  Running multi-turn steered rollouts on Fold {fold_num} test tasks...")
+        fold_results = runner.run_benchmark(
+            tasks=val_tasks,
             max_tasks=args.max_eval_tasks_per_fold,
             max_steps=args.max_steps,
+            dynamic_steps=args.dynamic_steps,
             temperature=args.temperature,
         )
 
@@ -236,10 +246,14 @@ def main():
         fold_tokens = sum(r["num_tokens"] for r in fold_results)
         fold_steered = sum(r["steered_steps"] for r in fold_results)
         pct_steered = (fold_steered / max(1, fold_tokens)) * 100
+        fold_successes = sum(1 for r in fold_results if r.get("is_success", False))
+        fold_success_rate = (fold_successes / max(1, len(fold_results))) * 100
 
         fold_stat = {
             "fold": fold_num,
             "val_tasks": len(fold_results),
+            "successes": fold_successes,
+            "success_rate": fold_success_rate,
             "probe_roc_auc": probe_eval.get("roc_auc", 0.0),
             "probe_accuracy": probe_eval.get("accuracy", 0.0),
             "total_tokens": fold_tokens,
@@ -247,7 +261,10 @@ def main():
             "pct_tokens_steered": pct_steered,
         }
         fold_metrics.append(fold_stat)
-        print(f"  Fold {fold_num} Complete: {fold_tokens} tokens generated, {fold_steered} steered ({pct_steered:.1f}%)")
+        print(
+            f"  Fold {fold_num} Complete: Success Rate: {fold_success_rate:.1f}% ({fold_successes}/{len(fold_results)}) | "
+            f"Tokens: {fold_tokens} ({fold_steered} steered, {pct_steered:.1f}%)"
+        )
 
     # 5. Save consolidated steering results across all 5 folds
     print("\n" + "=" * 65)
@@ -264,8 +281,11 @@ def main():
     total_all_tokens = sum(r["num_tokens"] for r in all_steering_results)
     total_all_steered = sum(r["steered_steps"] for r in all_steering_results)
     overall_pct_steered = (total_all_steered / max(1, total_all_tokens)) * 100
+    total_successes = sum(1 for r in all_steering_results if r.get("is_success", False))
+    overall_success_rate = (total_successes / max(1, len(all_steering_results))) * 100
 
     print(f"Total Tasks Evaluated:  {len(all_steering_results)}")
+    print(f"Overall Success Rate:   {overall_success_rate:.1f}% ({total_successes}/{len(all_steering_results)})")
     print(f"Total Tokens Generated: {total_all_tokens}")
     print(f"Total Tokens Steered:   {total_all_steered} ({overall_pct_steered:.1f}%)")
     print(f"Saved Full Telemetry:   {summary_parquet_path.resolve()}")
