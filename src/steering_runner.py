@@ -72,11 +72,13 @@ class SteeringRunner:
         task: TaskInstance,
         max_steps: int = 35,
         dynamic_steps: bool = True,
+        max_steer_turns: Optional[int] = None,
         temperature: float = 0.0,
     ) -> dict:
         """
         Runs a multi-turn task rollout until completion (is_done) or hitting dynamic step budget.
         On every turn, actions are generated token-at-a-time with probe checking & steerer intervention.
+        If max_steer_turns is specified, steering hooks are only applied on the first N turns.
         """
         effective_max_steps = task.info.get("max_steps", max_steps) if dynamic_steps else max_steps
 
@@ -99,6 +101,7 @@ class SteeringRunner:
 
             for step_idx in range(effective_max_steps):
                 turn_count += 1
+                can_steer = (max_steer_turns is None) or (step_idx < max_steer_turns)
 
                 prompt_text = self.extractor.tokenizer.apply_chat_template(
                     messages, tokenize=False, add_generation_prompt=True
@@ -110,38 +113,43 @@ class SteeringRunner:
                 turn_steered = []
 
                 for _ in range(64):
-                    step_info = {"score": 0.0, "steered": False}
+                    if can_steer:
+                        step_info = {"score": 0.0, "steered": False}
 
-                    def hook_fn(module, input, output):
-                        nonlocal last_act
-                        is_tuple = isinstance(output, tuple)
-                        hidden = output[0] if is_tuple else output
+                        def hook_fn(module, input, output):
+                            nonlocal last_act
+                            is_tuple = isinstance(output, tuple)
+                            hidden = output[0] if is_tuple else output
 
-                        act_np = hidden[:, -1, :].detach().cpu().to(torch.float32).numpy()
-                        score = float(self.probe.predict(act_np, return_proba=True)[0])
-                        step_info["score"] = score
-                        last_act = hidden[:, -1, :].detach().clone()
+                            act_np = hidden[:, -1, :].detach().cpu().to(torch.float32).numpy()
+                            score = float(self.probe.predict(act_np, return_proba=True)[0])
+                            step_info["score"] = score
+                            last_act = hidden[:, -1, :].detach().clone()
 
-                        if score < self.threshold:
-                            steered_np = self.steerer.intervene(act_np)
-                            steered_tensor = torch.from_numpy(steered_np).to(device=hidden.device, dtype=hidden.dtype)
-                            hidden = hidden.clone()
-                            hidden[:, -1, :] = steered_tensor
-                            step_info["steered"] = True
-                        else:
-                            step_info["steered"] = False
+                            if score < self.threshold:
+                                steered_np = self.steerer.intervene(act_np)
+                                steered_tensor = torch.from_numpy(steered_np).to(device=hidden.device, dtype=hidden.dtype)
+                                hidden = hidden.clone()
+                                hidden[:, -1, :] = steered_tensor
+                                step_info["steered"] = True
+                            else:
+                                step_info["steered"] = False
 
-                        return (hidden,) + output[1:] if is_tuple else hidden
+                            return (hidden,) + output[1:] if is_tuple else hidden
 
-                    handle = self.extractor.model.model.layers[self.layer_id].register_forward_hook(hook_fn)
-                    try:
+                        handle = self.extractor.model.model.layers[self.layer_id].register_forward_hook(hook_fn)
+                        try:
+                            with torch.inference_mode():
+                                outputs = self.extractor.model(input_ids=input_ids, use_cache=False)
+                        finally:
+                            handle.remove()
+
+                        all_probe_scores.append(step_info["score"])
+                        turn_steered.append(step_info["steered"])
+                    else:
                         with torch.inference_mode():
                             outputs = self.extractor.model(input_ids=input_ids, use_cache=False)
-                    finally:
-                        handle.remove()
-
-                    all_probe_scores.append(step_info["score"])
-                    turn_steered.append(step_info["steered"])
+                        turn_steered.append(False)
 
                     logits = outputs.logits[0, -1, :]
 
@@ -173,7 +181,7 @@ class SteeringRunner:
                 steered_in_turn = sum(turn_steered)
                 if self.verbose:
                     first_line = action_text.split("\n")[0] if "\n" in action_text else action_text
-                    steer_tag = f" [{steered_in_turn}/{len(turn_tokens)} steered]" if steered_in_turn > 0 else ""
+                    steer_tag = f" [{steered_in_turn}/{len(turn_tokens)} steered]" if steered_in_turn > 0 else (" (unsteered turn)" if not can_steer else "")
                     print(
                         f"    [Step {step_idx + 1}/{effective_max_steps}]{steer_tag} "
                         f"Action: '{first_line[:60]}' -> Obs: '{obs.observation_text[:60]}'"
@@ -234,6 +242,7 @@ class SteeringRunner:
         max_tasks: Optional[int] = None,
         max_steps: int = 35,
         dynamic_steps: bool = True,
+        max_steer_turns: Optional[int] = None,
         temperature: float = 0.0,
     ) -> list[dict]:
         """Runs multi-turn evaluation across specified tasks (e.g. 20% validation split) or all benchmark tasks."""
@@ -241,7 +250,8 @@ class SteeringRunner:
         results = []
 
         if self.verbose:
-            print(f"Starting steered multi-turn evaluation on {len(target_tasks)} tasks...")
+            steer_mode = f"first {max_steer_turns} turns" if max_steer_turns is not None else "all turns"
+            print(f"Starting steered multi-turn evaluation on {len(target_tasks)} tasks (Steering: {steer_mode})...")
 
         for i, task in enumerate(target_tasks):
             if self.verbose:
@@ -250,6 +260,7 @@ class SteeringRunner:
                 task=task,
                 max_steps=max_steps,
                 dynamic_steps=dynamic_steps,
+                max_steer_turns=max_steer_turns,
                 temperature=temperature,
             )
             results.append(res)

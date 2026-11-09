@@ -4,8 +4,8 @@
 1. Downloads full TextCraft activations from Hugging Face (skarnati20/textcraft-full-qwen7b-activations).
 2. Performs stratified group 5-fold cross-validation by task_id to ensure zero data leakage.
 3. In each fold:
-   - Trains probe and CentroidSteerer on 80% training activations (with 50/50 rebalancing).
-   - Runs multi-turn token-at-a-time steering on the remaining 20% test tasks via runner.run_benchmark(tasks=val_tasks).
+   - Trains probe and CentroidSteerer on 80% training activations (optionally filtered to first N turns).
+   - Runs multi-turn rollouts on the remaining 20% test tasks, optionally applying steering hooks only on the first N turns.
 4. Collects and saves consolidated steering telemetry and success rates across all folds.
 """
 
@@ -93,6 +93,23 @@ def parse_args():
         help="L2 regularization constant C for LinearProbe (default: 0.1)",
     )
     parser.add_argument(
+        "--max_train_turns",
+        "--train_max_turns",
+        type=int,
+        default=None,
+        dest="max_train_turns",
+        help="Train probe and steerer only on activations from the first N turns (default: None = all turns)",
+    )
+    parser.add_argument(
+        "--max_steer_turns",
+        "--steer_max_turns",
+        "--eval_max_turns",
+        type=int,
+        default=None,
+        dest="max_steer_turns",
+        help="Only apply steering hooks during the first N turns of each task; subsequent turns run unsteered (default: None = steer all turns)",
+    )
+    parser.add_argument(
         "--max_steps",
         type=int,
         default=35,
@@ -151,6 +168,8 @@ def main():
     print(f"Anchor:             {args.anchor}")
     print(f"Threshold:          {args.threshold}")
     print(f"Alpha:              {args.alpha} (Normalize: {args.normalize})")
+    print(f"Max Train Turns:    {args.max_train_turns or 'All'}")
+    print(f"Max Steer Turns:    {args.max_steer_turns or 'All turns in episode'}")
     print(f"Dynamic Steps:      {args.dynamic_steps} (Fallback max: {args.max_steps})")
     print(f"Output Directory:   {output_dir.resolve()}")
     print("=" * 65)
@@ -194,9 +213,17 @@ def main():
         train_set = dataset.slice(train_idx)
         val_set = dataset.slice(val_idx)
 
+        # Optionally filter training activations to first N turns
+        train_data = train_set
+        if args.max_train_turns is not None:
+            step_col = "step_idx" if "step_idx" in train_set.metadata.columns else "round"
+            turn_mask = (train_set.metadata[step_col] < args.max_train_turns).values
+            train_data = train_set.slice(np.where(turn_mask)[0])
+            print(f"  Filtered train set to first {args.max_train_turns} turns: {train_data.num_samples} samples")
+
         # 50/50 balance training set for robust probe and centroid vector
-        train_bal = rebalance_dataset(train_set, ratio=0.5, seed=args.seed + fold_idx)
-        print(f"  Train set: {train_set.num_samples} samples -> Rebalanced: {train_bal.num_samples} samples")
+        train_bal = rebalance_dataset(train_data, ratio=0.5, seed=args.seed + fold_idx)
+        print(f"  Train samples (rebalanced): {train_bal.num_samples} (pos={np.sum(train_bal.y == 1)}, neg={np.sum(train_bal.y == 0)})")
 
         # Resolve validation tasks for this fold (20% test tasks)
         val_task_ids = list(val_set.metadata["task_id"].unique())
@@ -234,6 +261,7 @@ def main():
             max_tasks=args.max_eval_tasks_per_fold,
             max_steps=args.max_steps,
             dynamic_steps=args.dynamic_steps,
+            max_steer_turns=args.max_steer_turns,
             temperature=args.temperature,
         )
 

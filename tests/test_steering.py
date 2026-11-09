@@ -292,6 +292,30 @@ class TestSteeringRunner(unittest.TestCase):
         self.assertFalse(res["hit_max_rounds"])
         self.assertGreater(res["steered_steps"], 0)
 
+    def test_max_steer_turns(self):
+        # 3 turns total, but max_steer_turns=1 -> hook registered only on turn 1
+        self.benchmark.done_at_step = 3
+        self.probe.score = 0.2
+        runner = SteeringRunner(
+            extractor=self.mock_extractor,
+            probe=self.probe,
+            steerer=self.steerer,
+            benchmark=self.benchmark,
+            output_dir=self.temp_dir.name,
+            layer_id=0,
+            threshold=0.5,
+            verbose=False,
+        )
+
+        self.steerer.intervene = MagicMock(side_effect=self.steerer.intervene)
+
+        res = runner.run_task(self.test_task, dynamic_steps=True, max_steer_turns=1)
+
+        self.assertTrue(res["is_success"])
+        self.assertEqual(res["num_steps"], 3)
+        # Intervene was called during turn 1, but turns 2 and 3 ran unsteered
+        self.assertGreater(self.steerer.intervene.call_count, 0)
+
     def test_run_benchmark(self):
         runner = SteeringRunner(
             extractor=self.mock_extractor,
@@ -303,7 +327,6 @@ class TestSteeringRunner(unittest.TestCase):
             verbose=False,
         )
 
-        # Run on custom task subset (e.g. 20% validation split)
         results = runner.run_benchmark(tasks=[self.test_task], max_tasks=1)
         self.assertEqual(len(results), 1)
         self.assertTrue(results[0]["is_success"])
