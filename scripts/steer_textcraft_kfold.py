@@ -4,8 +4,8 @@
 1. Downloads full TextCraft activations from Hugging Face (skarnati20/textcraft-full-qwen7b-activations).
 2. Performs stratified group 5-fold cross-validation by task_id to ensure zero data leakage.
 3. In each fold:
-   - Trains probe and CentroidSteerer on 80% training activations (optionally filtered to first N turns).
-   - Runs multi-turn rollouts on the remaining 20% test tasks, optionally applying steering hooks only on the first N turns.
+   - Trains probe and CentroidSteerer on 80% training activations at target anchor (pre_gen or post_gen).
+   - Runs multi-turn rollouts on the remaining 20% test tasks, evaluating & steering turns at the chosen anchor token.
 4. Collects and saves consolidated steering telemetry and success rates across all folds.
 """
 
@@ -67,7 +67,7 @@ def parse_args():
         type=str,
         default="post_gen",
         choices=["post_gen", "pre_gen"],
-        help="Anchor position for training features (default: post_gen)",
+        help="Anchor token position to evaluate & steer ('post_gen' or 'pre_gen'; default: post_gen)",
     )
     parser.add_argument(
         "--threshold",
@@ -242,6 +242,7 @@ def main():
             benchmark=bench,
             output_dir=fold_out_dir,
             layer_id=args.layer_id,
+            anchor=args.anchor,
             threshold=args.threshold,
             verbose=not args.quiet,
         )
@@ -271,9 +272,9 @@ def main():
         all_steering_results.extend(fold_results)
 
         # Fold summary stats
-        fold_tokens = sum(r["num_tokens"] for r in fold_results)
+        fold_turns = sum(r["num_steps"] for r in fold_results)
         fold_steered = sum(r["steered_steps"] for r in fold_results)
-        pct_steered = (fold_steered / max(1, fold_tokens)) * 100
+        pct_steered = (fold_steered / max(1, fold_turns)) * 100
         fold_successes = sum(1 for r in fold_results if r.get("is_success", False))
         fold_success_rate = (fold_successes / max(1, len(fold_results))) * 100
 
@@ -284,14 +285,14 @@ def main():
             "success_rate": fold_success_rate,
             "probe_roc_auc": probe_eval.get("roc_auc", 0.0),
             "probe_accuracy": probe_eval.get("accuracy", 0.0),
-            "total_tokens": fold_tokens,
-            "steered_tokens": fold_steered,
-            "pct_tokens_steered": pct_steered,
+            "total_turns": fold_turns,
+            "steered_turns": fold_steered,
+            "pct_turns_steered": pct_steered,
         }
         fold_metrics.append(fold_stat)
         print(
             f"  Fold {fold_num} Complete: Success Rate: {fold_success_rate:.1f}% ({fold_successes}/{len(fold_results)}) | "
-            f"Tokens: {fold_tokens} ({fold_steered} steered, {pct_steered:.1f}%)"
+            f"Turns: {fold_turns} ({fold_steered} steered, {pct_steered:.1f}%)"
         )
 
     # 5. Save consolidated steering results across all 5 folds
@@ -306,16 +307,16 @@ def main():
     with open(metrics_json_path, "w") as fp:
         json.dump(fold_metrics, fp, indent=2)
 
-    total_all_tokens = sum(r["num_tokens"] for r in all_steering_results)
+    total_all_turns = sum(r["num_steps"] for r in all_steering_results)
     total_all_steered = sum(r["steered_steps"] for r in all_steering_results)
-    overall_pct_steered = (total_all_steered / max(1, total_all_tokens)) * 100
+    overall_pct_steered = (total_all_steered / max(1, total_all_turns)) * 100
     total_successes = sum(1 for r in all_steering_results if r.get("is_success", False))
     overall_success_rate = (total_successes / max(1, len(all_steering_results))) * 100
 
     print(f"Total Tasks Evaluated:  {len(all_steering_results)}")
     print(f"Overall Success Rate:   {overall_success_rate:.1f}% ({total_successes}/{len(all_steering_results)})")
-    print(f"Total Tokens Generated: {total_all_tokens}")
-    print(f"Total Tokens Steered:   {total_all_steered} ({overall_pct_steered:.1f}%)")
+    print(f"Total Turns Run:        {total_all_turns}")
+    print(f"Total Turns Steered:    {total_all_steered} ({overall_pct_steered:.1f}%)")
     print(f"Saved Full Telemetry:   {summary_parquet_path.resolve()}")
     print(f"Saved Fold Metrics:     {metrics_json_path.resolve()}")
 

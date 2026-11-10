@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import torch
 
+from src.activations import ExtractionResult
 from src.benchmark.base import BaseBenchmark, StepObservation, TaskInstance
 from src.probe.base import Probe
 from src.steering.steerers.centroid import CentroidSteerer
@@ -144,38 +145,32 @@ class TestSteeringRunner(unittest.TestCase):
         self.mock_extractor.tokenizer.eos_token_id = 999
         self.mock_extractor.tokenizer.decode.return_value = "craft 1 planks"
 
-        # Mock model forward outputs
+        # Mock step_forward
+        dummy_hidden = torch.zeros((2, 5, 64), dtype=torch.float16)
+        self.mock_result = ExtractionResult(
+            completion_text="craft 1 planks",
+            hidden_states=dummy_hidden,
+            prompt_tokens=2,
+            completion_tokens=3,
+        )
+        self.mock_extractor.step_forward.return_value = self.mock_result
+
+        # Mock model for pre_gen forward pass
         class ModelOutput:
             def __init__(self):
-                self.logits = torch.zeros((1, 1, 1000))
-                self.logits[0, -1, 42] = 10.0
                 self.hidden_states = (
-                    torch.zeros((1, 1, 64)),
-                    torch.zeros((1, 1, 64)),
+                    torch.zeros((1, 2, 64)),
+                    torch.zeros((1, 2, 64)),
+                    torch.zeros((1, 2, 64)),
                 )
 
+        self.mock_extractor.model.return_value = ModelOutput()
+
+        # Mock layer for hook registration
         self.mock_layer = MagicMock()
-
-        def mock_register_forward_hook(hook_fn):
-            self._active_hook = hook_fn
-            handle = MagicMock()
-            def remove():
-                self._active_hook = None
-            handle.remove = remove
-            return handle
-
-        self._active_hook = None
-        self.mock_layer.register_forward_hook.side_effect = mock_register_forward_hook
+        self.mock_hook_handle = MagicMock()
+        self.mock_layer.register_forward_hook.return_value = self.mock_hook_handle
         self.mock_extractor.model.model.layers = [self.mock_layer]
-
-        def mock_model_forward(*args, **kwargs):
-            out = ModelOutput()
-            if self._active_hook is not None:
-                res = self._active_hook(self.mock_layer, args, (out.hidden_states[1],))
-                out.hidden_states = (out.hidden_states[0], res[0] if isinstance(res, tuple) else res)
-            return out
-
-        self.mock_extractor.model.side_effect = mock_model_forward
 
         self.probe = DummyProbe(score=0.8)
         self.steerer = CentroidSteerer(alpha=1.0)
@@ -200,7 +195,6 @@ class TestSteeringRunner(unittest.TestCase):
         self.assertEqual(len(tasks), 1)
         self.assertEqual(tasks[0].task_id, "task_1")
 
-        # Test passing custom tasks
         custom_task = TaskInstance(task_id="custom", instruction="do it", system_prompt="prompt")
         custom_tasks = runner.get_tasks(tasks=[custom_task])
         self.assertEqual(len(custom_tasks), 1)
@@ -229,6 +223,7 @@ class TestSteeringRunner(unittest.TestCase):
         self.assertIsNotNone(self.steerer.steering_direction)
 
     def test_run_task_no_intervention(self):
+        # Post-gen anchor, probe score 0.8 >= 0.5 -> No intervention
         self.probe.score = 0.8
         runner = SteeringRunner(
             extractor=self.mock_extractor,
@@ -237,6 +232,7 @@ class TestSteeringRunner(unittest.TestCase):
             benchmark=self.benchmark,
             output_dir=self.temp_dir.name,
             layer_id=0,
+            anchor="post_gen",
             threshold=0.5,
             verbose=False,
         )
@@ -249,7 +245,8 @@ class TestSteeringRunner(unittest.TestCase):
         self.assertEqual(res["steered_steps"], 0)
         self.steerer.intervene.assert_not_called()
 
-    def test_run_task_with_intervention(self):
+    def test_run_task_with_intervention_post_gen(self):
+        # Post-gen anchor, probe score 0.2 < 0.5 -> Intervenes with steering hook
         self.probe.score = 0.2
         runner = SteeringRunner(
             extractor=self.mock_extractor,
@@ -258,6 +255,31 @@ class TestSteeringRunner(unittest.TestCase):
             benchmark=self.benchmark,
             output_dir=self.temp_dir.name,
             layer_id=0,
+            anchor="post_gen",
+            threshold=0.5,
+            verbose=False,
+        )
+
+        self.steerer.intervene = MagicMock(side_effect=self.steerer.intervene)
+
+        res = runner.run_task(self.test_task)
+
+        self.assertTrue(res["is_success"])
+        self.assertGreater(res["steered_steps"], 0)
+        self.assertGreater(self.steerer.intervene.call_count, 0)
+        self.mock_layer.register_forward_hook.assert_called()
+
+    def test_run_task_with_intervention_pre_gen(self):
+        # Pre-gen anchor, probe score 0.2 < 0.5 -> Intervenes with steering hook
+        self.probe.score = 0.2
+        runner = SteeringRunner(
+            extractor=self.mock_extractor,
+            probe=self.probe,
+            steerer=self.steerer,
+            benchmark=self.benchmark,
+            output_dir=self.temp_dir.name,
+            layer_id=0,
+            anchor="pre_gen",
             threshold=0.5,
             verbose=False,
         )
@@ -293,7 +315,6 @@ class TestSteeringRunner(unittest.TestCase):
         self.assertGreater(res["steered_steps"], 0)
 
     def test_max_steer_turns(self):
-        # 3 turns total, but max_steer_turns=1 -> hook registered only on turn 1
         self.benchmark.done_at_step = 3
         self.probe.score = 0.2
         runner = SteeringRunner(
@@ -313,8 +334,7 @@ class TestSteeringRunner(unittest.TestCase):
 
         self.assertTrue(res["is_success"])
         self.assertEqual(res["num_steps"], 3)
-        # Intervene was called during turn 1, but turns 2 and 3 ran unsteered
-        self.assertGreater(self.steerer.intervene.call_count, 0)
+        self.assertEqual(res["steered_steps"], 1)
 
     def test_run_benchmark(self):
         runner = SteeringRunner(
