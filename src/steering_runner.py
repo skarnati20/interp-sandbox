@@ -15,10 +15,10 @@ from src.store import ActivationDataset, ShardWriter, save_run_summary
 class SteeringRunner:
     """
     Executes multi-turn agent rollouts under probe-guided turn-level steering.
-    At each turn:
-      1. Evaluates residual-stream activation at the chosen anchor token ('pre_gen' or 'post_gen') using a Probe.
-      2. If probe score < threshold, intervenes via Steerer.intervene() to shift activations toward success.
-      3. Steps the benchmark environment until the task completes or dynamic budget cap is reached.
+    Supports two intervention methods:
+      - 'vector': Injects steering vector derived from Steerer.intervene() into target layer.
+      - 'resample': Rejection sampling / Best-of-N: regenerates candidate actions up to budget
+                    until probe score >= threshold.
     """
 
     def __init__(
@@ -31,6 +31,9 @@ class SteeringRunner:
         layer_id: int = 20,
         anchor: str = "post_gen",
         threshold: float = 0.5,
+        method: str = "vector",
+        max_resample_attempts: int = 5,
+        resample_temperature: float = 0.7,
         shard_size: int = 2000,
         verbose: bool = True,
     ):
@@ -44,6 +47,9 @@ class SteeringRunner:
         self.layer_id = layer_id
         self.anchor = anchor.strip().lower()
         self.threshold = threshold
+        self.method = method.strip().lower()
+        self.max_resample_attempts = max(1, max_resample_attempts)
+        self.resample_temperature = resample_temperature
         self.shard_size = shard_size
         self.verbose = verbose
 
@@ -98,15 +104,35 @@ class SteeringRunner:
         temperature: float = 0.0,
     ) -> tuple[ExtractionResult, float, bool]:
         """
-        Executes one turn of action generation using the specified anchor:
-          - If anchor == 'pre_gen': Evaluates prompt decision token before generation.
-            If score < threshold, steers the forward generation pass.
-          - If anchor == 'post_gen': Evaluates candidate completion token.
-            If score < threshold, intervenes and regenerates with steering hook.
+        Executes one turn of action generation:
+          - If method == 'resample': Regenerates actions up to max_resample_attempts until probe score >= threshold.
+          - If method == 'vector' and anchor == 'pre_gen': Evaluates prompt decision token; steers forward pass if score < threshold.
+          - If method == 'vector' and anchor == 'post_gen': Evaluates candidate completion; regenerates with steering vector if score < threshold.
         Returns: (result, probe_score, intervened)
         """
+        # --- Resampling Intervention (Best-of-N Rejection Sampling) ---
+        if self.method == "resample":
+            candidates: list[tuple[ExtractionResult, float, bool]] = []
+            for attempt in range(self.max_resample_attempts):
+                curr_temp = temperature if attempt == 0 else max(self.resample_temperature, 0.1)
+                result = self.extractor.step_forward(messages, temperature=curr_temp)
+
+                feat = result.get_anchor_state(anchor=self.anchor, layer_ids=[self.layer_id])
+                act_np = feat.detach().cpu().to(torch.float32).numpy().reshape(1, -1)
+                score = float(self.probe.predict(act_np, return_proba=True)[0])
+                candidates.append((result, score, attempt > 0))
+
+                # Accept immediately if score passes threshold, or if steering is disabled on this turn
+                if score >= self.threshold or not can_steer:
+                    return result, score, (attempt > 0)
+
+            # Budget exhausted: pick candidate with highest predicted success
+            best_result, best_score, best_intervened = max(candidates, key=lambda c: c[1])
+            return best_result, best_score, (len(candidates) > 1)
+
+        # --- Vector Steering Intervention ---
         if self.anchor == "pre_gen":
-            # 1. Quick forward pass over prompt to extract pre_gen activation
+            # Quick forward pass over prompt to extract pre_gen activation
             prompt_text = self.extractor.tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )
@@ -133,18 +159,15 @@ class SteeringRunner:
             return result, score, intervened
 
         else:
-            # Default: 'post_gen' anchor
-            # 1. Generate candidate action completion
+            # Default: 'post_gen' anchor vector steering
             result = self.extractor.step_forward(messages, temperature=temperature)
 
-            # 2. Extract activation at post_gen anchor token (end of completion)
             feat = result.get_anchor_state(anchor="post_gen", layer_ids=[self.layer_id])
             act_np = feat.detach().cpu().to(torch.float32).numpy().reshape(1, -1)
 
             score = float(self.probe.predict(act_np, return_proba=True)[0])
             intervened = False
 
-            # 3. If score < threshold, intervene and regenerate with steering hook
             if can_steer and score < self.threshold:
                 steered_act = self.steerer.intervene(act_np)
                 delta = steered_act - act_np
@@ -163,7 +186,7 @@ class SteeringRunner:
     ) -> dict:
         """
         Runs a multi-turn task rollout until completion (is_done) or hitting dynamic step budget.
-        On every turn, the action is evaluated and steered at the chosen anchor token position.
+        On every turn, the action is evaluated and intervened at the chosen anchor token position.
         """
         effective_max_steps = task.info.get("max_steps", max_steps) if dynamic_steps else max_steps
 
@@ -188,7 +211,6 @@ class SteeringRunner:
                 turn_count += 1
                 can_steer = (max_steer_turns is None) or (step_idx < max_steer_turns)
 
-                # Generate and conditionally steer action using chosen anchor
                 result, score, intervened = self.run_turn(
                     messages=messages,
                     can_steer=can_steer,
@@ -206,7 +228,8 @@ class SteeringRunner:
 
                 if self.verbose:
                     first_line = action_text.split("\n")[0] if "\n" in action_text else action_text
-                    steer_tag = " [STEERED]" if intervened else (" (unsteered turn)" if not can_steer else "")
+                    mode_tag = "RESAMPLED" if self.method == "resample" else "STEERED"
+                    steer_tag = f" [{mode_tag}]" if intervened else (" (unsteered turn)" if not can_steer else "")
                     print(
                         f"    [Turn {step_idx + 1}/{effective_max_steps}] P(success)={score:.3f}{steer_tag} "
                         f"Action: '{first_line[:60]}' -> Obs: '{obs.observation_text[:60]}'"
@@ -242,7 +265,7 @@ class SteeringRunner:
                 status = "SUCCESS" if is_success else "FAILED"
                 print(
                     f"  -> Result: {status} in {turn_count}/{effective_max_steps} turns | "
-                    f"Reward: {total_reward:.1f} | Steered Turns: {num_steered}/{turn_count}"
+                    f"Reward: {total_reward:.1f} | Intervened Turns: {num_steered}/{turn_count}"
                 )
 
             # Stream turn activations to shard writer with ground-truth success attached
@@ -286,7 +309,7 @@ class SteeringRunner:
 
         if self.verbose:
             steer_mode = f"first {max_steer_turns} turns" if max_steer_turns is not None else "all turns"
-            print(f"Starting steered multi-turn evaluation on {len(target_tasks)} tasks (Anchor: {self.anchor}, Steering: {steer_mode})...")
+            print(f"Starting multi-turn evaluation on {len(target_tasks)} tasks (Method: {self.method}, Anchor: {self.anchor}, Steering: {steer_mode})...")
 
         for i, task in enumerate(target_tasks):
             if self.verbose:
@@ -313,7 +336,7 @@ class SteeringRunner:
         if self.verbose and results:
             print(
                 f"\nEvaluation Complete! Success Rate: {success_rate:.1f}% ({success_count}/{len(results)}) | "
-                f"Steered Turns: {steered_pct:.1f}% ({total_steered}/{total_turns})"
+                f"Intervened Turns: {steered_pct:.1f}% ({total_steered}/{total_turns})"
             )
             print(f"Saved feature shards to {self.features_dir}")
             print(f"Saved run summary to {summary_path}")

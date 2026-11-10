@@ -5,7 +5,7 @@
 2. Performs stratified group 5-fold cross-validation by task_id to ensure zero data leakage.
 3. In each fold:
    - Trains probe and CentroidSteerer on 80% training activations at target anchor (pre_gen or post_gen).
-   - Runs multi-turn rollouts on the remaining 20% test tasks, evaluating & steering turns at the chosen anchor token.
+   - Runs multi-turn rollouts on the remaining 20% test tasks with vector steering or Best-of-N resampling.
 4. Collects and saves consolidated steering telemetry and success rates across all folds.
 """
 
@@ -70,6 +70,25 @@ def parse_args():
         help="Anchor token position to evaluate & steer ('post_gen' or 'pre_gen'; default: post_gen)",
     )
     parser.add_argument(
+        "--method",
+        type=str,
+        default="vector",
+        choices=["vector", "resample"],
+        help="Intervention method: 'vector' for activation addition, 'resample' for Best-of-N rejection sampling (default: vector)",
+    )
+    parser.add_argument(
+        "--max_resample_attempts",
+        type=int,
+        default=5,
+        help="Budget of candidate generation attempts per turn when using --method resample (default: 5)",
+    )
+    parser.add_argument(
+        "--resample_temperature",
+        type=float,
+        default=0.7,
+        help="Sampling temperature for regeneration when using --method resample (default: 0.7)",
+    )
+    parser.add_argument(
         "--threshold",
         type=float,
         default=0.5,
@@ -79,7 +98,7 @@ def parse_args():
         "--alpha",
         type=float,
         default=1.0,
-        help="Centroid steering direction scaling multiplier (default: 1.0)",
+        help="Centroid steering direction scaling multiplier for vector steering (default: 1.0)",
     )
     parser.add_argument(
         "--normalize",
@@ -107,7 +126,7 @@ def parse_args():
         type=int,
         default=None,
         dest="max_steer_turns",
-        help="Only apply steering hooks during the first N turns of each task; subsequent turns run unsteered (default: None = steer all turns)",
+        help="Only apply steering/resampling during the first N turns of each task; subsequent turns run unsteered (default: None = steer all turns)",
     )
     parser.add_argument(
         "--max_steps",
@@ -166,8 +185,12 @@ def main():
     print(f"Model:              {args.model}")
     print(f"Layer ID:           {args.layer_id}")
     print(f"Anchor:             {args.anchor}")
+    print(f"Method:             {args.method.upper()}")
+    if args.method == "resample":
+        print(f"Resample Budget:    {args.max_resample_attempts} attempts (Temp: {args.resample_temperature})")
+    else:
+        print(f"Alpha:              {args.alpha} (Normalize: {args.normalize})")
     print(f"Threshold:          {args.threshold}")
-    print(f"Alpha:              {args.alpha} (Normalize: {args.normalize})")
     print(f"Max Train Turns:    {args.max_train_turns or 'All'}")
     print(f"Max Steer Turns:    {args.max_steer_turns or 'All turns in episode'}")
     print(f"Dynamic Steps:      {args.dynamic_steps} (Fallback max: {args.max_steps})")
@@ -244,6 +267,9 @@ def main():
             layer_id=args.layer_id,
             anchor=args.anchor,
             threshold=args.threshold,
+            method=args.method,
+            max_resample_attempts=args.max_resample_attempts,
+            resample_temperature=args.resample_temperature,
             verbose=not args.quiet,
         )
 
