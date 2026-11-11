@@ -15,10 +15,12 @@ from src.store import ActivationDataset, ShardWriter, save_run_summary
 class SteeringRunner:
     """
     Executes multi-turn agent rollouts under probe-guided turn-level steering.
-    Supports two intervention methods:
+    Supports three intervention methods:
       - 'vector': Injects steering vector derived from Steerer.intervene() into target layer.
       - 'resample': Rejection sampling / Best-of-N: regenerates candidate actions up to budget
                     until probe score >= threshold.
+      - 'hybrid' / 'resample_steer': Combined: when probe falls below threshold, activates
+                    steering vector injection AND resamples candidate actions up to budget.
     """
 
     def __init__(
@@ -105,14 +107,81 @@ class SteeringRunner:
     ) -> tuple[ExtractionResult, float, bool]:
         """
         Executes one turn of action generation:
+          - If method == 'hybrid': When probe falls below threshold, activates steering hook
+            AND resamples candidate actions up to max_resample_attempts.
           - If method == 'resample': Regenerates actions up to max_resample_attempts until probe score >= threshold.
           - If method == 'vector' and anchor == 'pre_gen': Evaluates prompt decision token; steers forward pass if score < threshold.
           - If method == 'vector' and anchor == 'post_gen': Evaluates candidate completion; regenerates with steering vector if score < threshold.
         Returns: (result, probe_score, intervened)
         """
+        # --- Combined Hybrid: Vector Steering + Resampling ---
+        if self.method in ["hybrid", "resample_steer", "steered_resample"]:
+            if self.anchor == "pre_gen":
+                prompt_text = self.extractor.tokenizer.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True
+                )
+                inputs = self.extractor.tokenizer(prompt_text, return_tensors="pt").to(self.extractor.device)
+                with torch.inference_mode():
+                    out = self.extractor.model(**inputs, output_hidden_states=True)
+
+                num_layers = len(out.hidden_states) - 1
+                layer_idx = min(max(0, self.layer_id + 1), num_layers)
+                pre_gen_tensor = out.hidden_states[layer_idx][0, -1, :]
+                act_np = pre_gen_tensor.detach().cpu().to(torch.float32).numpy().reshape(1, -1)
+                score = float(self.probe.predict(act_np, return_proba=True)[0])
+
+                if score >= self.threshold or not can_steer:
+                    result = self.extractor.step_forward(messages, temperature=temperature)
+                    return result, score, False
+
+                steered_act = self.steerer.intervene(act_np)
+                delta = steered_act - act_np
+            else:
+                # post_gen anchor
+                result = self.extractor.step_forward(messages, temperature=temperature)
+                feat = result.get_anchor_state(anchor="post_gen", layer_ids=[self.layer_id])
+                act_np = feat.detach().cpu().to(torch.float32).numpy().reshape(1, -1)
+                score = float(self.probe.predict(act_np, return_proba=True)[0])
+
+                if score >= self.threshold or not can_steer:
+                    return result, score, False
+
+                steered_act = self.steerer.intervene(act_np)
+                delta = steered_act - act_np
+
+            # Under the steering vector, resample candidate actions up to budget
+            target_layer = self.extractor.model.model.layers[self.layer_id]
+            vec_tensor = torch.from_numpy(delta).to(device=self.extractor.device)
+
+            def hook_fn(module, input, output):
+                is_tuple = isinstance(output, tuple)
+                hidden = output[0] if is_tuple else output
+                v = vec_tensor.to(dtype=hidden.dtype)
+                hidden = hidden + v
+                return (hidden,) + output[1:] if is_tuple else hidden
+
+            handle = target_layer.register_forward_hook(hook_fn)
+            candidates: list[tuple[ExtractionResult, float, bool]] = []
+            try:
+                for attempt in range(self.max_resample_attempts):
+                    curr_temp = max(self.resample_temperature, 0.1)
+                    cand_result = self.extractor.step_forward(messages, temperature=curr_temp)
+                    cand_feat = cand_result.get_anchor_state(anchor=self.anchor, layer_ids=[self.layer_id])
+                    cand_act = cand_feat.detach().cpu().to(torch.float32).numpy().reshape(1, -1)
+                    cand_score = float(self.probe.predict(cand_act, return_proba=True)[0])
+                    candidates.append((cand_result, cand_score, True))
+
+                    if cand_score >= self.threshold:
+                        return cand_result, cand_score, True
+            finally:
+                handle.remove()
+
+            best_result, best_score, best_intervened = max(candidates, key=lambda c: c[1])
+            return best_result, best_score, True
+
         # --- Resampling Intervention (Best-of-N Rejection Sampling) ---
         if self.method == "resample":
-            candidates: list[tuple[ExtractionResult, float, bool]] = []
+            candidates = []
             for attempt in range(self.max_resample_attempts):
                 curr_temp = temperature if attempt == 0 else max(self.resample_temperature, 0.1)
                 result = self.extractor.step_forward(messages, temperature=curr_temp)
@@ -228,7 +297,12 @@ class SteeringRunner:
 
                 if self.verbose:
                     first_line = action_text.split("\n")[0] if "\n" in action_text else action_text
-                    mode_tag = "RESAMPLED" if self.method == "resample" else "STEERED"
+                    if self.method in ["hybrid", "resample_steer"]:
+                        mode_tag = "HYBRID_STEER"
+                    elif self.method == "resample":
+                        mode_tag = "RESAMPLED"
+                    else:
+                        mode_tag = "STEERED"
                     steer_tag = f" [{mode_tag}]" if intervened else (" (unsteered turn)" if not can_steer else "")
                     print(
                         f"    [Turn {step_idx + 1}/{effective_max_steps}] P(success)={score:.3f}{steer_tag} "

@@ -307,7 +307,7 @@ class TestSteeringRunner(unittest.TestCase):
 
         self.assertTrue(res["is_success"])
         self.assertEqual(res["num_steps"], 3)
-        self.assertEqual(res["max_steps"], 5)  # From task.info["max_steps"]
+        self.assertEqual(res["max_steps"], 5)
         self.assertFalse(res["hit_max_rounds"])
         self.assertGreater(res["steered_steps"], 0)
 
@@ -334,7 +334,6 @@ class TestSteeringRunner(unittest.TestCase):
         self.assertEqual(res["steered_steps"], 1)
 
     def test_resampling_mode(self):
-        # Test rejection sampling: first attempt fails (0.2), second attempt passes (0.9)
         scores = [0.2, 0.9, 0.2, 0.9]
         score_iter = iter(scores)
 
@@ -360,10 +359,39 @@ class TestSteeringRunner(unittest.TestCase):
 
         res = runner.run_task(self.test_task)
         self.assertTrue(res["is_success"])
-        # Resampling was triggered
         self.assertGreater(res["steered_steps"], 0)
-        # Vector intervention was NOT called because method="resample"
         self.mock_layer.register_forward_hook.assert_not_called()
+
+    def test_hybrid_mode(self):
+        # Initial action fails (0.2), triggers steering hook AND resamples candidate that passes (0.9)
+        scores = [0.2, 0.9, 0.2, 0.9]
+        score_iter = iter(scores)
+
+        def mock_predict(x, return_proba=False):
+            s = next(score_iter, 0.8)
+            return np.array([s]) if return_proba else np.array([int(s >= 0.5)])
+
+        self.probe.predict = MagicMock(side_effect=mock_predict)
+        self.benchmark.done_at_step = 2
+
+        runner = SteeringRunner(
+            extractor=self.mock_extractor,
+            probe=self.probe,
+            steerer=self.steerer,
+            benchmark=self.benchmark,
+            output_dir=self.temp_dir.name,
+            layer_id=0,
+            threshold=0.5,
+            method="hybrid",
+            max_resample_attempts=5,
+            verbose=False,
+        )
+
+        res = runner.run_task(self.test_task)
+        self.assertTrue(res["is_success"])
+        self.assertGreater(res["steered_steps"], 0)
+        # Vector hook WAS registered during resampling!
+        self.mock_layer.register_forward_hook.assert_called()
 
     def test_run_benchmark(self):
         runner = SteeringRunner(

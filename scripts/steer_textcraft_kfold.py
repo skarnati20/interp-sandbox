@@ -5,7 +5,8 @@
 2. Performs stratified group 5-fold cross-validation by task_id to ensure zero data leakage.
 3. In each fold:
    - Trains probe and CentroidSteerer on 80% training activations at target anchor (pre_gen or post_gen).
-   - Runs multi-turn rollouts on the remaining 20% test tasks with vector steering or Best-of-N resampling.
+   - Runs multi-turn rollouts on the remaining 20% test tasks with vector steering, Best-of-N resampling,
+     or combined hybrid steered resampling.
 4. Collects and saves consolidated steering telemetry and success rates across all folds.
 """
 
@@ -73,20 +74,20 @@ def parse_args():
         "--method",
         type=str,
         default="vector",
-        choices=["vector", "resample"],
-        help="Intervention method: 'vector' for activation addition, 'resample' for Best-of-N rejection sampling (default: vector)",
+        choices=["vector", "resample", "hybrid", "resample_steer"],
+        help="Intervention method: 'vector' (latent vector steering), 'resample' (rejection sampling), or 'hybrid' (steered resampling) (default: vector)",
     )
     parser.add_argument(
         "--max_resample_attempts",
         type=int,
         default=5,
-        help="Budget of candidate generation attempts per turn when using --method resample (default: 5)",
+        help="Budget of candidate generation attempts per turn when using resample/hybrid (default: 5)",
     )
     parser.add_argument(
         "--resample_temperature",
         type=float,
         default=0.7,
-        help="Sampling temperature for regeneration when using --method resample (default: 0.7)",
+        help="Sampling temperature for regeneration when using resample/hybrid (default: 0.7)",
     )
     parser.add_argument(
         "--threshold",
@@ -98,7 +99,7 @@ def parse_args():
         "--alpha",
         type=float,
         default=1.0,
-        help="Centroid steering direction scaling multiplier for vector steering (default: 1.0)",
+        help="Centroid steering direction scaling multiplier for vector/hybrid steering (default: 1.0)",
     )
     parser.add_argument(
         "--normalize",
@@ -186,9 +187,9 @@ def main():
     print(f"Layer ID:           {args.layer_id}")
     print(f"Anchor:             {args.anchor}")
     print(f"Method:             {args.method.upper()}")
-    if args.method == "resample":
+    if args.method in ["resample", "hybrid", "resample_steer"]:
         print(f"Resample Budget:    {args.max_resample_attempts} attempts (Temp: {args.resample_temperature})")
-    else:
+    if args.method in ["vector", "hybrid", "resample_steer"]:
         print(f"Alpha:              {args.alpha} (Normalize: {args.normalize})")
     print(f"Threshold:          {args.threshold}")
     print(f"Max Train Turns:    {args.max_train_turns or 'All'}")
